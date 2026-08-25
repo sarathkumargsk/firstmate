@@ -286,6 +286,12 @@ yolo on a ship brief|brief-refused-b1 some-proj --mode direct-PR --yolo on|--yol
 yolo=value form on a ship brief|brief-refused-b2 some-proj --mode direct-PR --yolo=off|--yolo is not a brief input
 mode on a scout brief|brief-refused-b3 some-proj --scout --mode direct-PR|--mode applies only to ship briefs
 mode on a secondmate charter|brief-refused-b4 --secondmate --no-projects --mode no-mistakes|--mode applies only to ship briefs
+branch prefix on a scout brief|brief-refused-b5 some-proj --scout --branch-prefix feat|--branch-prefix applies only to ship briefs
+branch prefix on a secondmate charter|brief-refused-b6 --secondmate --no-projects --branch-prefix fix|--branch-prefix applies only to ship briefs
+unknown branch prefix|brief-refused-b7 some-proj --mode local-only --branch-prefix chore|--branch-prefix must be one of
+empty branch prefix value|brief-refused-b8 some-proj --mode local-only --branch-prefix|requires a value
+explicit empty branch prefix|brief-refused-b9 some-proj --mode local-only --branch-prefix=|--branch-prefix must be one of
+explicit empty branch prefix on a scout brief|brief-refused-b10 some-proj --scout --branch-prefix=|--branch-prefix applies only to ship briefs
 ROWS
   pass "fm-brief.sh: --yolo and scout/secondmate --mode are refused, never silently dropped"
 }
@@ -712,12 +718,62 @@ test_scout_and_secondmate_scaffold() {
   pass "fm-brief: scout and secondmate code paths still scaffold well-formed briefs"
 }
 
+# AGENTS.md section 7's branch contract: every generated ship brief names a
+# conventional `<prefix>/<task-id>` branch, the prefix is settled here rather than
+# by the worker, and the retired `fm/` prefix is never produced again - including
+# for a task id that carries no prefix signal of its own.
+test_ship_branch_is_conventional_and_never_legacy() {
+  local home id mode brief
+  home="$TMP_ROOT/branch-scheme-home"
+  write_registry "$home"
+  for id_mode in "no-signal-c1:no-mistakes" "no-signal-c2:direct-PR" "no-signal-c3:local-only"; do
+    id=${id_mode%%:*}
+    mode=${id_mode##*:}
+    FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode "$mode" >/dev/null 2>&1 \
+      || fail "$id: --mode $mode brief should scaffold"
+    brief="$home/data/$id/brief.md"
+    assert_grep "git checkout -b patch/$id" "$brief" \
+      "$id: an unsignalled task id must still get a conventional prefix"
+    assert_no_grep "fm/$id" "$brief" "$id: the retired fm/ prefix must never be generated"
+  done
+  pass "fm-brief.sh: ship briefs name a conventional branch and never the legacy fm/ prefix"
+}
+
+# The prefix is mechanical: a task id that already names its kind decides it, and
+# an explicit --branch-prefix overrides when the mechanical answer is wrong.
+test_ship_branch_prefix_is_derived_and_overridable() {
+  local home id brief label expect
+  home="$TMP_ROOT/branch-prefix-home"
+  write_registry "$home"
+  while IFS='|' read -r id label expect; do
+    [ -n "$id" ] || continue
+    # shellcheck disable=SC2086  # label is an intentional word-split arg list (may be empty)
+    FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode local-only $label >/dev/null 2>&1 \
+      || fail "$id: brief should scaffold"
+    brief="$home/data/$id/brief.md"
+    assert_grep "git checkout -b $expect" "$brief" "$id: wrong branch prefix"
+    assert_grep "ready in branch $expect" "$brief" "$id: definition of done must name the same branch"
+    grep -qF "Work only on your \`$expect\` branch" "$brief" \
+      || fail "$id: rule 1 must name the same branch"
+  done <<'ROWS'
+fix-broken-thing||fix/fix-broken-thing
+feat-new-thing||feat/feat-new-thing
+patch-small-thing||patch/patch-small-thing
+override-c4|--branch-prefix feat|feat/override-c4
+override-c5|--branch-prefix=fix|fix/override-c5
+fix-but-really-a-feature|--branch-prefix feat|feat/fix-but-really-a-feature
+ROWS
+  pass "fm-brief.sh: the branch prefix is derived from the task id and explicitly overridable"
+}
+
 test_script_parses
 test_no_heredoc_in_command_substitution
 test_help_includes_entire_header
 test_ship_modes_generate_clean_briefs
 test_ship_mode_is_required_and_closed_set
 test_ship_mode_is_explicit_not_registry
+test_ship_branch_is_conventional_and_never_legacy
+test_ship_branch_prefix_is_derived_and_overridable
 test_delivery_flags_are_refused_where_they_do_not_apply
 test_faster_paths_use_configured_authority_without_stacked_review
 test_no_mistakes_dod_wording

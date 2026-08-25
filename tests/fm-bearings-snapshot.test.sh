@@ -49,6 +49,12 @@ SH
 echo "gh $*" >> "$NET_LOG"
 if [ "${FAKE_GH_FAIL:-0}" = 1 ]; then exit 1; fi
 if [ "${FAKE_GH_SLEEP:-0}" = 1 ]; then sleep 30; fi
+if [ "${FAKE_GH_PREFIXES:-0}" = 1 ]; then
+  cat <<'JSON'
+[{"number":11,"title":"Fix","url":"https://github.com/acme/repo/pull/11","headRefName":"fix/broken-thing","reviewDecision":"","mergeable":"MERGEABLE","statusCheckRollup":[]},{"number":12,"title":"Feat","url":"https://github.com/acme/repo/pull/12","headRefName":"feat/new-thing","reviewDecision":"","mergeable":"MERGEABLE","statusCheckRollup":[]},{"number":13,"title":"Patch","url":"https://github.com/acme/repo/pull/13","headRefName":"patch/small-thing","reviewDecision":"","mergeable":"MERGEABLE","statusCheckRollup":[]},{"number":14,"title":"Legacy","url":"https://github.com/acme/repo/pull/14","headRefName":"fm/old-thing","reviewDecision":"","mergeable":"MERGEABLE","statusCheckRollup":[]},{"number":15,"title":"Outsider","url":"https://github.com/acme/repo/pull/15","headRefName":"dependabot/npm/thing","reviewDecision":"","mergeable":"MERGEABLE","statusCheckRollup":[]}]
+JSON
+  exit 0
+fi
 if [ "${FAKE_GH_MANY:-0}" = 1 ]; then
   cat <<'JSON'
 [{"number":1,"title":"One","url":"https://github.com/acme/repo/pull/1","headRefName":"fm/one","reviewDecision":"","mergeable":"MERGEABLE","statusCheckRollup":[]},{"number":2,"title":"Two","url":"https://github.com/acme/repo/pull/2","headRefName":"fm/two","reviewDecision":"","mergeable":"MERGEABLE","statusCheckRollup":[]},{"number":3,"title":"Three","url":"https://github.com/acme/repo/pull/3","headRefName":"fm/three","reviewDecision":"","mergeable":"MERGEABLE","statusCheckRollup":[]}]
@@ -1016,6 +1022,24 @@ EOF
   pass "captain-held tasks of any kind reach Captain's Call, deferral is honored, and landed excludes answered calls"
 }
 
+# A PR's task id is recovered from its head branch, so every prefix this fleet
+# produces must map back, the retired fm/ prefix must keep mapping for in-flight
+# PRs, and a branch that is not a task branch must stay unattributed.
+test_pr_task_id_recovered_from_every_task_branch_prefix() {
+  local home fakebin json
+  home=$(make_home pr-prefixes); write_fixture "$home"
+  fakebin=$(make_fakebin "$home"); : > "$home/net.log"
+  json=$(FAKE_GH_PREFIXES=1 FM_BEARINGS_PR_LIMIT=10 run "$home" "$fakebin" --include-prs --json)
+  printf '%s' "$json" | jq -e '
+    (.candidate_prs | any(.[]; .num == "11" and .task == "broken-thing"))
+      and (.candidate_prs | any(.[]; .num == "12" and .task == "new-thing"))
+      and (.candidate_prs | any(.[]; .num == "13" and .task == "small-thing"))
+      and (.candidate_prs | any(.[]; .num == "14" and .task == "old-thing"))
+      and (.candidate_prs | any(.[]; .num == "15" and .task == "-"))
+  ' >/dev/null || fail "PR task attribution missed a task-branch prefix: $json"
+  pass "candidate_prs recover the task id from every task-branch prefix, legacy included"
+}
+
 test_include_prs_is_the_only_fetch_path() {
   local home fakebin json
   home=$(make_home prs); write_fixture "$home"
@@ -1975,6 +1999,7 @@ test_open_decision_surfaces_end_to_end
 test_report_pointers_surface
 test_superseded_queued_item_dropped_by_default
 test_include_prs_is_the_only_fetch_path
+test_pr_task_id_recovered_from_every_task_branch_prefix
 test_partial_github_failure_degrades
 test_perl_fallback_bounds_github_call
 test_section_caps_and_expansion_flags

@@ -11,6 +11,10 @@
 #   (d) pr= present but PR head unreachable -> fallback to local branch + warning
 #   (e) pr= + STALE recorded pr_head= + newer remote pull head -> must use fetched head
 #       (this is the class that bit reviewers holding merges over "missing" fixes)
+#
+# The fixtures deliberately keep a legacy `fm/` task branch, since existing
+# branches must stay reviewable; test_new_scheme_branch_is_reviewed covers the
+# current `<prefix>/<task-id>` shape alongside it.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -21,7 +25,7 @@ REVIEW_DIFF="$ROOT/bin/fm-review-diff.sh"
 TMP_ROOT=$(fm_test_tmproot fm-review-diff-tests)
 
 make_case() {
-  local name=$1 case_dir
+  local name=$1 branch=${2:-fm/task-x1} case_dir
   case_dir="$TMP_ROOT/$name"
   mkdir -p "$case_dir/state"
 
@@ -36,7 +40,7 @@ make_case() {
 
   git clone -q "$case_dir/origin.git" "$case_dir/project"
   git -C "$case_dir/project" remote set-head origin main 2>/dev/null || true
-  git -C "$case_dir/project" worktree add -q -b fm/task-x1 "$case_dir/wt" main
+  git -C "$case_dir/project" worktree add -q -b "$branch" "$case_dir/wt" main
 
   touch "$case_dir/state/.last-watcher-beat"
   printf '%s\n' "$case_dir"
@@ -53,7 +57,7 @@ write_task_meta() {
 }
 
 stale_and_pr_commits() {
-  local case_dir=$1
+  local case_dir=$1 branch=${2:-fm/task-x1}
   printf 'stale-local\n' > "$case_dir/wt/feature.txt"
   git -C "$case_dir/wt" add feature.txt
   git -C "$case_dir/wt" commit -qm "stale local branch"
@@ -64,7 +68,7 @@ stale_and_pr_commits() {
   git -C "$case_dir/wt" commit -qm "pipeline fix on PR"
   PR_SHA=$(git -C "$case_dir/wt" rev-parse HEAD)
 
-  git -C "$case_dir/wt" checkout -q fm/task-x1
+  git -C "$case_dir/wt" checkout -q "$branch"
 }
 
 run_review_diff() {
@@ -169,8 +173,26 @@ test_unreachable_pr_head_falls_back_with_warning() {
   pass "fm-review-diff falls back to local branch with a warning when PR head is unreachable"
 }
 
+# Existing fm/ branches keep working (every other case here uses one), and the
+# current naming scheme must be reviewed the same way.
+test_new_scheme_branch_is_reviewed() {
+  local case_dir out
+  case_dir=$(make_case new-scheme-branch feat/task-x1)
+  stale_and_pr_commits "$case_dir" feat/task-x1
+  write_task_meta "$case_dir"
+
+  out=$(run_review_diff "$case_dir" task-x1 2> "$case_dir/stderr")
+
+  assert_contains "$out" '+stale-local' "new-scheme-branch: diff should use the feat/ task branch"
+  assert_not_contains "$out" '+pr-fixed' "new-scheme-branch: diff must not jump to the unpushed PR commit"
+  assert_not_contains "$(cat "$case_dir/stderr")" 'no task branch' \
+    "new-scheme-branch: the feat/ branch must resolve without falling back to HEAD"
+  pass "fm-review-diff reviews a new-scheme <prefix>/<task-id> branch"
+}
+
 test_pr_meta_uses_pr_head_not_stale_local
 test_pr_meta_fetches_pull_head_without_recorded_sha
 test_stale_recorded_pr_head_loses_to_fetched_pull_head
 test_no_pr_meta_uses_local_branch
+test_new_scheme_branch_is_reviewed
 test_unreachable_pr_head_falls_back_with_warning

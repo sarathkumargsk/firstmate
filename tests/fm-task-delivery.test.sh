@@ -238,6 +238,47 @@ test_promote_requires_and_records_the_delivery_contract() {
   pass "fm-promote: promotion requires the delivery contract and records it exactly once"
 }
 
+# Promotion is the second place a ship branch is named, so it must follow the same
+# contract as a scaffolded brief: a conventional prefix, never the retired fm/ one,
+# derived from the task id and overridable when that derivation is wrong.
+test_promote_names_a_conventional_ship_branch() {
+  local home meta out status
+  home="$TMP_ROOT/promote-branch/home"
+  mkdir -p "$home/state"
+
+  promote_scout() {  # <task-id> [extra args...]
+    local id=$1
+    shift
+    meta="$home/state/$id.meta"
+    printf 'window=fm-%s\nkind=scout\nworktree=/tmp/wt\n' "$id" > "$meta"
+    FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" "$PROMOTE" "$id" --mode local-only --yolo off "$@" 2>&1
+  }
+
+  out=$(promote_scout feat-promoted-thing); status=$?
+  expect_code 0 "$status" "promotion of a feat- scout should succeed"
+  assert_contains "$out" "create branch feat/feat-promoted-thing" "promotion did not derive the prefix from the task id"
+  assert_not_contains "$out" "fm/feat-promoted-thing" "promotion must never name the retired fm/ branch"
+
+  out=$(promote_scout unsignalled-thing); status=$?
+  expect_code 0 "$status" "promotion of an unsignalled scout should succeed"
+  assert_contains "$out" "create branch patch/unsignalled-thing" "an unsignalled task id must still get a conventional prefix"
+
+  out=$(promote_scout override-thing --branch-prefix fix); status=$?
+  expect_code 0 "$status" "promotion with an explicit prefix should succeed"
+  assert_contains "$out" "create branch fix/override-thing" "the explicit --branch-prefix must win"
+
+  out=$(promote_scout refused-thing --branch-prefix chore); status=$?
+  [ "$status" -ne 0 ] || fail "promotion with an out-of-set prefix should exit non-zero"
+  assert_contains "$out" "--branch-prefix must be one of" "promotion did not refuse an out-of-set prefix"
+
+  out=$(promote_scout empty-override-thing --branch-prefix=); status=$?
+  [ "$status" -ne 0 ] || fail "promotion with an explicitly empty prefix should exit non-zero"
+  assert_contains "$out" "--branch-prefix must be one of" "an explicitly empty --branch-prefix silently derived instead of refusing"
+  assert_not_contains "$out" "create branch patch/empty-override-thing" "an explicitly empty --branch-prefix fell through to derivation"
+  assert_grep 'kind=scout' "$home/state/refused-thing.meta" "a refused promotion still changed the task record"
+  pass "fm-promote: the ship branch is conventional, derived, and explicitly overridable"
+}
+
 # The registry parser survives for the mechanical consumers only. It accepts the
 # conditional policy, maps it to its most rigorous leg for them, and exposes the
 # raw annotation for the one caller that must tell a policy from a flat mode.
@@ -278,5 +319,6 @@ test_spawn_refuses_a_brief_mode_mismatch
 test_spawn_notices_a_rigor_downgrade_against_the_registry
 test_scout_records_no_delivery_posture
 test_promote_requires_and_records_the_delivery_contract
+test_promote_names_a_conventional_ship_branch
 test_project_mode_maps_the_conditional_policy
 echo "# all fm-task-delivery tests passed"
