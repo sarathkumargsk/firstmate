@@ -270,6 +270,11 @@ test_promote_names_a_conventional_ship_branch() {
   out=$(promote_scout refused-thing --branch-prefix chore); status=$?
   [ "$status" -ne 0 ] || fail "promotion with an out-of-set prefix should exit non-zero"
   assert_contains "$out" "--branch-prefix must be one of" "promotion did not refuse an out-of-set prefix"
+
+  out=$(promote_scout empty-override-thing --branch-prefix=); status=$?
+  [ "$status" -ne 0 ] || fail "promotion with an explicitly empty prefix should exit non-zero"
+  assert_contains "$out" "--branch-prefix must be one of" "an explicitly empty --branch-prefix silently derived instead of refusing"
+  assert_not_contains "$out" "create branch patch/empty-override-thing" "an explicitly empty --branch-prefix fell through to derivation"
   assert_grep 'kind=scout' "$home/state/refused-thing.meta" "a refused promotion still changed the task record"
   pass "fm-promote: the ship branch is conventional, derived, and explicitly overridable"
 }

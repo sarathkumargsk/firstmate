@@ -290,6 +290,8 @@ branch prefix on a scout brief|brief-refused-b5 some-proj --scout --branch-prefi
 branch prefix on a secondmate charter|brief-refused-b6 --secondmate --no-projects --branch-prefix fix|--branch-prefix applies only to ship briefs
 unknown branch prefix|brief-refused-b7 some-proj --mode local-only --branch-prefix chore|--branch-prefix must be one of
 empty branch prefix value|brief-refused-b8 some-proj --mode local-only --branch-prefix|requires a value
+explicit empty branch prefix|brief-refused-b9 some-proj --mode local-only --branch-prefix=|--branch-prefix must be one of
+explicit empty branch prefix on a scout brief|brief-refused-b10 some-proj --scout --branch-prefix=|--branch-prefix applies only to ship briefs
 ROWS
   pass "fm-brief.sh: --yolo and scout/secondmate --mode are refused, never silently dropped"
 }

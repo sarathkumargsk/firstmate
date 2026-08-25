@@ -114,6 +114,7 @@ NO_PROJECTS=0
 MODE=
 MODE_SET=0
 BRANCH_PREFIX=
+BRANCH_PREFIX_SET=0
 POS=()
 want_value=
 for a in "$@"; do
@@ -123,7 +124,7 @@ for a in "$@"; do
     esac
     case "$want_value" in
       mode) MODE=$a; MODE_SET=1 ;;
-      branch-prefix) BRANCH_PREFIX=$a ;;
+      branch-prefix) BRANCH_PREFIX=$a; BRANCH_PREFIX_SET=1 ;;
       *) echo "error: internal parser state for --$want_value" >&2; exit 1 ;;
     esac
     want_value=
@@ -137,7 +138,7 @@ for a in "$@"; do
     --mode) want_value=mode ;;
     --mode=*) MODE=${a#--mode=}; MODE_SET=1 ;;
     --branch-prefix) want_value='branch-prefix' ;;
-    --branch-prefix=*) BRANCH_PREFIX=${a#--branch-prefix=} ;;
+    --branch-prefix=*) BRANCH_PREFIX=${a#--branch-prefix=}; BRANCH_PREFIX_SET=1 ;;
     # yolo never reaches the worker: it is firstmate's approval authority, not a
     # brief input. Refuse it loudly so it is never silently dropped here and then
     # believed to have been recorded.
@@ -165,7 +166,7 @@ elif [ "$MODE_SET" -eq 1 ]; then
   echo "error: --mode applies only to ship briefs; a scout delivers a report and a secondmate charter is not a delivery contract" >&2
   exit 1
 fi
-if [ -n "$BRANCH_PREFIX" ]; then
+if [ "$BRANCH_PREFIX_SET" -eq 1 ]; then
   [ "$KIND" = ship ] || { echo "error: --branch-prefix applies only to ship briefs; a scout worktree is scratch and a secondmate charter has no branch" >&2; exit 1; }
   fm_branch_prefix_valid "$BRANCH_PREFIX" || { echo "error: --branch-prefix must be one of $FM_BRANCH_PREFIXES (got '$BRANCH_PREFIX')" >&2; exit 1; }
 fi

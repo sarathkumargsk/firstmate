@@ -33,6 +33,7 @@ STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 MODE=
 YOLO=
 BRANCH_PREFIX=
+BRANCH_PREFIX_SET=0
 MODE_SET=0
 YOLO_SET=0
 POS=()
@@ -45,7 +46,7 @@ for a in "$@"; do
     case "$want_value" in
       mode) MODE=$a; MODE_SET=1 ;;
       yolo) YOLO=$a; YOLO_SET=1 ;;
-      branch-prefix) BRANCH_PREFIX=$a ;;
+      branch-prefix) BRANCH_PREFIX=$a; BRANCH_PREFIX_SET=1 ;;
     esac
     want_value=
     continue
@@ -56,7 +57,7 @@ for a in "$@"; do
     --yolo) want_value=yolo ;;
     --yolo=*) YOLO=${a#--yolo=}; YOLO_SET=1 ;;
     --branch-prefix) want_value='branch-prefix' ;;
-    --branch-prefix=*) BRANCH_PREFIX=${a#--branch-prefix=} ;;
+    --branch-prefix=*) BRANCH_PREFIX=${a#--branch-prefix=}; BRANCH_PREFIX_SET=1 ;;
     *) POS+=("$a") ;;
   esac
 done
@@ -81,7 +82,7 @@ case "$YOLO" in
   on|off) ;;
   *) echo "error: --yolo must be on or off (got '$YOLO')" >&2; exit 1 ;;
 esac
-if [ -n "$BRANCH_PREFIX" ]; then
+if [ "$BRANCH_PREFIX_SET" -eq 1 ]; then
   fm_branch_prefix_valid "$BRANCH_PREFIX" || { echo "error: --branch-prefix must be one of $FM_BRANCH_PREFIXES (got '$BRANCH_PREFIX')" >&2; exit 1; }
 fi
 
