@@ -4,7 +4,7 @@
 # state/<task-id>.meta so fm-teardown.sh applies the full ship-task teardown protection
 # again. After promoting, send the crewmate its ship instructions via fm-send.sh
 # (inventory scratch state, reset to a clean default-branch base, carry over only
-# intended fix changes, create branch fm/<task-id>, implement, then report done
+# intended fix changes, create branch <prefix>/<task-id>, implement, then report done
 # according to this task's delivery mode).
 # A scout records no delivery posture, so promotion is where this task's delivery
 # contract is decided: --mode and --yolo are REQUIRED and written into the meta
@@ -12,7 +12,10 @@
 # read the scout's report (AGENTS.md section 7); data/projects.md holds the
 # captain's standing posture as context, and this script never looks it up.
 # no-mistakes-prod-only is a registry policy rather than a task mode and is refused.
-# Usage: fm-promote.sh <task-id> --mode <no-mistakes|direct-PR|local-only> --yolo <on|off>
+# The printed ship branch follows the same naming contract as a scaffolded ship
+# brief (bin/fm-branch-lib.sh): --branch-prefix overrides, otherwise the prefix is
+# derived from the task id. The legacy `fm/` prefix is never produced.
+# Usage: fm-promote.sh <task-id> --mode <no-mistakes|direct-PR|local-only> --yolo <on|off> [--branch-prefix <fix|feat|patch>]
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -24,9 +27,12 @@ STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 . "$SCRIPT_DIR/fm-pr-lib.sh"
 # shellcheck source=bin/fm-wake-lib.sh
 . "$SCRIPT_DIR/fm-wake-lib.sh"
+# shellcheck source=bin/fm-branch-lib.sh
+. "$SCRIPT_DIR/fm-branch-lib.sh"
 
 MODE=
 YOLO=
+BRANCH_PREFIX=
 MODE_SET=0
 YOLO_SET=0
 POS=()
@@ -39,6 +45,7 @@ for a in "$@"; do
     case "$want_value" in
       mode) MODE=$a; MODE_SET=1 ;;
       yolo) YOLO=$a; YOLO_SET=1 ;;
+      branch-prefix) BRANCH_PREFIX=$a ;;
     esac
     want_value=
     continue
@@ -48,6 +55,8 @@ for a in "$@"; do
     --mode=*) MODE=${a#--mode=}; MODE_SET=1 ;;
     --yolo) want_value=yolo ;;
     --yolo=*) YOLO=${a#--yolo=}; YOLO_SET=1 ;;
+    --branch-prefix) want_value='branch-prefix' ;;
+    --branch-prefix=*) BRANCH_PREFIX=${a#--branch-prefix=} ;;
     *) POS+=("$a") ;;
   esac
 done
@@ -72,6 +81,9 @@ case "$YOLO" in
   on|off) ;;
   *) echo "error: --yolo must be on or off (got '$YOLO')" >&2; exit 1 ;;
 esac
+if [ -n "$BRANCH_PREFIX" ]; then
+  fm_branch_prefix_valid "$BRANCH_PREFIX" || { echo "error: --branch-prefix must be one of $FM_BRANCH_PREFIXES (got '$BRANCH_PREFIX')" >&2; exit 1; }
+fi
 
 ID=${POS[0]}
 fm_task_id_creation_valid "$ID" || { echo "error: invalid task id" >&2; exit 2; }
@@ -122,4 +134,5 @@ META_LOCK_HELD=0
 
 HOME_Q=$(printf '%q' "$FM_HOME")
 echo "promoted $ID to ship mode=$MODE yolo=$YOLO (teardown protection restored)"
-echo "next: FM_HOME=$HOME_Q bin/fm-send.sh fm-$ID '<ship instructions for mode=$MODE: review scratch state with git status and git log; reset to a clean default-branch base; carry over only intended fix changes; create branch fm/$ID; implement; report done>'"
+SHIP_BRANCH=$(fm_branch_name "${BRANCH_PREFIX:-$(fm_branch_prefix_for_id "$ID")}" "$ID")
+echo "next: FM_HOME=$HOME_Q bin/fm-send.sh fm-$ID '<ship instructions for mode=$MODE: review scratch state with git status and git log; reset to a clean default-branch base; carry over only intended fix changes; create branch $SHIP_BRANCH; implement; report done>'"

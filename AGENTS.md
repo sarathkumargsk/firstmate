@@ -292,6 +292,9 @@ Write the task-specific brief under section 11 before spawning.
 
 Spawn only through `bin/fm-spawn.sh` after the profile and backend checks in section 4.
 The spawn must resolve a genuine isolated task worktree distinct from the primary checkout; a failed isolation assertion stops the task.
+
+A ship task's branch is `<prefix>/<task-id>`, where the prefix is `fix` for broken behavior, `feat` for a new capability, and `patch` for a small correction, documentation, chore, or config touch-up.
+Firstmate resolves the prefix at scaffold time, never the worker at runtime, and `bin/fm-branch-lib.sh` owns the derivation, the explicit override, and the read compatibility that keeps existing `fm/` branches working.
 After spawning, confirm the worker is processing the brief, handle any trust dialog through `harness-adapters`, and record ship or scout work as under way.
 A persistent secondmate is recorded in the secondmate registry and runtime state, never as a backlog work item.
 
