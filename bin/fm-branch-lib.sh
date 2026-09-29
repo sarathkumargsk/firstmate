@@ -53,11 +53,49 @@ fm_branch_candidates() {
   done
 }
 
+# Default ship-branch prefix in the `<prefix>/` form the brief, promote, and
+# spawn scripts concatenate with a task id (`$BRANCH_PREFIX$ID`).
+fm_branch_default_prefix_for_id() {
+  printf '%s/\n' "$(fm_branch_prefix_for_id "$1")"
+}
+
+# Normalize an explicit --branch-prefix: a bare produced prefix (fix, feat,
+# patch) gains its `/`; any other value is a project-registered free-form prefix
+# and is kept as given.
+fm_branch_normalize_prefix() {
+  if fm_branch_prefix_valid "$1"; then
+    printf '%s/\n' "$1"
+  else
+    printf '%s\n' "$1"
+  fi
+}
+
+# Print the ship branch recorded in a task meta file (`branch=`), if any. The
+# recorded value is immutable and wins over every derived name.
+fm_branch_recorded() {
+  local meta=$1
+  [ -f "$meta" ] || return 0
+  grep '^branch=' "$meta" 2>/dev/null | head -n 1 | cut -d= -f2- || true
+}
+
 # Print the one existing local branch holding <task-id>'s work in the repo at
-# <dir>. Returns 1 when none exists and 2 when several do, because guessing
-# between two real branches would review or merge the wrong work.
+# <dir>. Order: the branch recorded in <meta> (optional 3rd arg) when present,
+# then the prefix scheme (new prefixes first, legacy `fm/` last). Returns 1 when
+# none exists, 2 when several prefix-scheme branches do (guessing between two real
+# branches would review or merge the wrong work), and 3 when the recorded branch
+# is not a valid ref name.
 fm_branch_resolve() {
-  local dir=$1 id=$2 candidate found=""
+  local dir=$1 id=$2 meta=${3:-} candidate found="" recorded
+  recorded=$(fm_branch_recorded "$meta")
+  if [ -n "$recorded" ]; then
+    if ! git check-ref-format --branch "$recorded" >/dev/null 2>&1; then
+      echo "error: task $id has an invalid recorded ship branch '$recorded'" >&2
+      return 3
+    fi
+    git -C "$dir" rev-parse --verify --quiet "refs/heads/$recorded" >/dev/null 2>&1 || return 1
+    printf '%s\n' "$recorded"
+    return 0
+  fi
   while IFS= read -r candidate; do
     git -C "$dir" rev-parse --verify --quiet "refs/heads/$candidate" >/dev/null 2>&1 || continue
     if [ -n "$found" ]; then
@@ -72,13 +110,18 @@ EOF
   printf '%s\n' "$found"
 }
 
-# Print the branch holding <task-id>'s work in the repo at <dir>, or fail after
-# naming every branch name that would have been accepted.
+# Print the branch holding <task-id>'s work in the repo at <dir> (optional
+# <meta> as in fm_branch_resolve), or fail naming what would have been accepted.
 fm_branch_require() {
-  local dir=$1 id=$2 branch rc=0
-  branch=$(fm_branch_resolve "$dir" "$id") || rc=$?
+  local dir=$1 id=$2 meta=${3:-} branch rc=0 recorded
+  branch=$(fm_branch_resolve "$dir" "$id" "$meta") || rc=$?
   if [ "$rc" -eq 1 ]; then
-    echo "error: no branch for task $id in $dir; expected one of $(fm_branch_candidates "$id" | tr '\n' ' ')" >&2
+    recorded=$(fm_branch_recorded "$meta")
+    if [ -n "$recorded" ]; then
+      echo "error: branch $recorded does not exist in $dir" >&2
+    else
+      echo "error: no branch for task $id in $dir; expected one of $(fm_branch_candidates "$id" | tr '\n' ' ')" >&2
+    fi
   fi
   [ "$rc" -eq 0 ] || return 1
   printf '%s\n' "$branch"

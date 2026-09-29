@@ -35,7 +35,9 @@ make_case() {
 run_merge_local() {
   local case_dir=$1
   shift
+  mkdir -p "$case_dir/home/data"
   FM_ROOT_OVERRIDE="$ROOT" \
+  FM_HOME="$case_dir/home" \
   FM_STATE_OVERRIDE="$case_dir/state" \
     "$MERGE_LOCAL" "$@"
 }
