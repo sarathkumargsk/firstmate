@@ -493,20 +493,20 @@ Any of these preserves the candidate and lets session startup continue with at m
 ## Visual mode
 
 `config/herdr-visual-mode` is an explicit per-home opt-in for a shared split-pane view.
-Its default is off, so absent, empty, or `off` preserves the existing task-tab layout.
+Its default is off, so absent, empty, or `off` preserves the existing task-tab layout, and any other value warns and stays off.
 The file is local and gitignored, and a secondmate home does not inherit it from the primary.
 Write `on` to place newly launched crewmates and scouts as labeled sibling panes in one existing task tab in the home workspace.
 The first visual worker creates that tab and labels it `workers` rather than after any task, so the tab keeps no task's identity after its first worker leaves.
 Later workers split a currently recorded visual worker pane rather than using a label lookup.
-Each new worker splits the widest recorded visual pane, to the right when that pane is at least twice as wide as it is tall and downward otherwise, so the workers fill a grid.
-A split must leave both halves at least 60 columns wide and 15 rows tall.
+Each new worker splits the widest recorded visual pane that has room, to the right when that pane is at least twice as wide as it is tall and downward otherwise, or the other way when only that direction has room, so the workers fill a grid.
+A right split must leave both halves at least 60 columns wide, and a downward split must leave both halves at least 15 rows tall.
 When no recorded visual pane has that room, the worker warns and opens an ordinary task tab outside the visual layout.
 Herdr reports pane sizes from the attached client, or from its headless size (120 columns by 40 rows by default) while no client is attached, so workers launched while detached reach that smaller limit sooner.
 Spawns in one home take turns choosing and making their split, and that turn ends before worktree setup begins.
 Two spawns that start before any visual worker is recorded can therefore each open a tab, and later workers join the first live one.
 Each pane remains the task's exact recorded endpoint, so sending, reading, liveness, and cleanup retain their normal task identity.
-An in-place relaunch keeps the task's visual marker, and a rebind of a visual task rejoins the shared tab.
-The setting affects new endpoints only.
+An in-place relaunch keeps the task's recorded visual marker, and a rebind follows that marker rather than the current setting, so a visual task rejoins the shared tab.
+The setting affects newly launched tasks only.
 Firstmate never rearranges an active task when the setting changes.
 
 Visual mode uses Herdr's native controls instead of a Firstmate dashboard.
@@ -523,7 +523,7 @@ A task resuming from a presentation journal keeps that journal's recovery, inclu
 
 ### Visual mode test
 
-`tests/fm-backend-herdr-presentation-e2e.test.sh` verifies the opt-in through ordinary task launch and cleanup, including persisted shared-pane identities.
+`tests/fm-backend-herdr-presentation-e2e.test.sh` verifies the opt-in through ordinary task launch and cleanup, including persisted shared-pane identities, and verifies that a journaled resume keeps its presentation recovery while visual mode is on.
 `tests/fm-backend-herdr-smoke.test.sh` verifies the native split, focus, zoom, labeling, and exact-pane cleanup operations against a guarded named Herdr session.
 
 ## Default-tab prune safety
