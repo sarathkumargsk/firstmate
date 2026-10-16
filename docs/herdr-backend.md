@@ -18,6 +18,7 @@ Herdr provides the terminal session while Treehouse continues to provide task wo
 | Install Herdr and select it | [Setup](#setup) |
 | Why a command ran on a different `herdr` client | [Client selection](#client-selection) |
 | Where task tabs appear and how to watch them | [Watching and task containers](#watching-and-task-containers) |
+| How to opt into shared split panes and use native navigation or zoom | [Visual mode](#visual-mode) |
 | The one-task workspaces, their setting, and their cleanup | [Presentation spaces](#presentation-spaces) |
 | Why a seeded default tab is or is not closed | [Default-tab prune safety](#default-tab-prune-safety) |
 | What task metadata records for a Herdr endpoint | [Endpoint metadata](#endpoint-metadata) |
@@ -488,6 +489,29 @@ Any of these preserves the candidate and lets session startup continue with at m
 
 [`verification/runtime-backends.md`](verification/runtime-backends.md#workspace-removal-focus-safety) owns the active versioned evidence for the focus-flash test.
 [`verification/runtime-backends.md`](verification/runtime-backends.md#attached-foreground-viewer) owns the active versioned evidence and the re-run trigger for the attached-viewer test.
+
+## Visual mode
+
+`config/herdr-visual-mode` is an explicit per-home opt-in for a shared split-pane view.
+Its default is off, so absent, empty, or `off` preserves the existing task-tab layout.
+Write `on` to place newly launched crewmates and scouts as labeled sibling panes in one existing task tab in the home workspace.
+The first visual worker creates that tab, and later workers split a currently recorded visual worker pane rather than using a label lookup.
+Each pane remains the task's exact recorded endpoint, so sending, reading, liveness, and cleanup retain their normal task identity.
+The setting affects new endpoints only.
+Firstmate never rearranges an active task when the setting changes.
+
+Visual mode uses Herdr's native controls instead of a Firstmate dashboard.
+With Herdr's default configuration, prefix-h/j/k/l changes the selected pane, prefix-Tab cycles panes, and prefix-z zooms or restores the selected pane.
+The sidebar and agent picker remain available for direct selection.
+User Herdr keybindings remain authoritative, and Firstmate does not edit `~/.config/herdr/config.toml`.
+
+Visual mode takes precedence over presentation spaces for a newly launched task because the two layouts conflict.
+`config/herdr-presentation-spaces` continues to control the existing one-task workspace projection whenever visual mode is off.
+
+### Visual mode test
+
+`tests/fm-backend-herdr-presentation-e2e.test.sh` verifies the opt-in through ordinary task launch and cleanup, including persisted shared-pane identities.
+`tests/fm-backend-herdr-smoke.test.sh` verifies the native split, focus, zoom, labeling, and exact-pane cleanup operations against a guarded named Herdr session.
 
 ## Default-tab prune safety
 

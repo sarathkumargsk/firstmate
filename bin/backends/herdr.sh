@@ -152,6 +152,10 @@ FM_BACKEND_HERDR_PRESENTATION_JOURNAL_SUFFIX=".herdr-presentation"
 # The config item a home writes to opt out of, or explicitly in to, the
 # projection.
 FM_BACKEND_HERDR_PRESENTATION_CONFIG="herdr-presentation-spaces"
+# An explicit visual layout is distinct from the disposable one-task
+# presentation projection above. It groups newly launched workers as panes in
+# one existing home tab and leaves the default tab-per-task topology unchanged.
+FM_BACKEND_HERDR_VISUAL_CONFIG="herdr-visual-mode"
 
 # fm_backend_herdr_presentation_preference <config-dir>: the single owner of
 # config/herdr-presentation-spaces parsing. Echoes exactly one of "off", "on"
@@ -342,6 +346,31 @@ fm_backend_herdr_presentation_enabled() {  # <config-dir> [<state-dir>]
     on) return 0 ;;
   esac
   fm_backend_herdr_presentation_default_supported "$state_dir"
+}
+
+# fm_backend_herdr_visual_preference <config-dir>: parse the home-local
+# opt-in for Herdr's shared split-pane layout. Unlike presentation spaces this
+# feature is default-off, so an absent, empty, or explicit "off" file preserves
+# the established one-tab-per-task behavior. An invalid value warns and stays
+# off rather than making a cosmetic preference block a launch.
+fm_backend_herdr_visual_preference() {  # <config-dir>
+  local config_dir=${1:-} file value
+  [ -n "$config_dir" ] || { printf 'off\n'; return 0; }
+  file="$config_dir/$FM_BACKEND_HERDR_VISUAL_CONFIG"
+  [ -f "$file" ] || { printf 'off\n'; return 0; }
+  value=$(tr -d '[:space:]' < "$file" 2>/dev/null | tr '[:upper:]' '[:lower:]') || value=""
+  case "$value" in
+    ''|off) printf 'off\n' ;;
+    on) printf 'on\n' ;;
+    *)
+      echo "warning: $file: unrecognized value \"$value\"; Herdr visual mode stays off (write \"on\" to opt in)" >&2
+      printf 'off\n'
+      ;;
+  esac
+}
+
+fm_backend_herdr_visual_enabled() {  # <config-dir>
+  [ "$(fm_backend_herdr_visual_preference "$1")" = on ]
 }
 
 # fm_backend_herdr_workspace_label: the per-firstmate-HOME herdr workspace
@@ -2560,6 +2589,93 @@ EOF
   printf '%s %s' "$tab_id" "$pane_id"
 }
 
+# fm_backend_herdr_meta_field_exact: print one exact metadata value, refusing
+# duplicate or empty values. Visual layout discovery reads only this home's
+# existing task records; a user-created pane label is never ownership proof.
+fm_backend_herdr_meta_field_exact() {  # <meta> <key>
+  local meta=$1 key=$2
+  awk -v key="$key" '
+    index($0, key "=") == 1 {
+      count++
+      value = substr($0, length(key) + 2)
+    }
+    END {
+      if (count == 1 && value != "") print value
+    }
+  ' "$meta" 2>/dev/null
+}
+
+# fm_backend_herdr_visual_root: find one still-live visual task in this home
+# that can receive a sibling pane. The durable metadata proves ownership before
+# the adapter asks Herdr to inspect its pane, so a matching manual pane label
+# cannot pull a worker into somebody else's layout. Echoes "<tab> <pane>".
+fm_backend_herdr_visual_root() {  # <state-dir> <session> <workspace>
+  local state=$1 session=$2 workspace=$3 meta visual recorded_session recorded_workspace recorded_tab pane info tab actual_pane actual_workspace
+  for meta in "$state"/*.meta; do
+    [ -f "$meta" ] || continue
+    visual=$(fm_backend_herdr_meta_field_exact "$meta" herdr_visual_mode)
+    [ "$visual" = on ] || continue
+    recorded_session=$(fm_backend_herdr_meta_field_exact "$meta" herdr_session)
+    recorded_workspace=$(fm_backend_herdr_meta_field_exact "$meta" herdr_workspace_id)
+    recorded_tab=$(fm_backend_herdr_meta_field_exact "$meta" herdr_tab_id)
+    pane=$(fm_backend_herdr_meta_field_exact "$meta" herdr_pane_id)
+    [ "$recorded_session" = "$session" ] && [ "$recorded_workspace" = "$workspace" ] \
+      && [ -n "$recorded_tab" ] && [ -n "$pane" ] || continue
+    info=$(fm_backend_herdr_cli "$session" pane get "$pane" 2>/dev/null) || continue
+    actual_pane=$(printf '%s' "$info" | jq -r '.result.pane.pane_id // empty' 2>/dev/null)
+    actual_workspace=$(printf '%s' "$info" | jq -r '.result.pane.workspace_id // empty' 2>/dev/null)
+    tab=$(printf '%s' "$info" | jq -r '.result.pane.tab_id // empty' 2>/dev/null)
+    [ "$actual_pane" = "$pane" ] && [ "$actual_workspace" = "$workspace" ] \
+      && [ "$tab" = "$recorded_tab" ] || continue
+    printf '%s %s' "$tab" "$pane"
+    return 0
+  done
+  return 1
+}
+
+# fm_backend_herdr_visual_create_task: create a task in the home-local shared
+# visual tab. The first opted-in task keeps the normal tab creation path and
+# becomes the root. Later tasks split a response-verified pane from a recorded
+# visual task. Every pane is named with the ordinary fm-<id> label so native
+# Herdr navigation and the adapter's recovery inventory identify it directly.
+# Echoes "<tab_id> <pane_id>" on success.
+fm_backend_herdr_visual_create_task() {  # <container> <label> <cwd> <state-dir> <seeded-default-tab-id>
+  local container=$1 label=$2 cwd=$3 state=$4 seeded_tab_id=${5:-}
+  local session wsid root tab_id root_pane out pane_id actual_tab actual_pane
+  session=${container%%:*}
+  wsid=${container#*:}
+  if root=$(fm_backend_herdr_visual_root "$state" "$session" "$wsid"); then
+    read -r tab_id root_pane <<EOF
+$root
+EOF
+    out=$(fm_backend_herdr_cli "$session" pane split "$root_pane" --direction right --cwd "$cwd" --no-focus 2>/dev/null) || return 1
+    pane_id=$(printf '%s' "$out" | jq -r '.result.pane.pane_id // empty' 2>/dev/null)
+    actual_tab=$(printf '%s' "$out" | jq -r '.result.pane.tab_id // empty' 2>/dev/null)
+    [ -n "$pane_id" ] && [ "$actual_tab" = "$tab_id" ] || return 1
+  else
+    out=$(fm_backend_herdr_create_task "$container" "$label" "$cwd" "$seeded_tab_id") || return 1
+    read -r tab_id pane_id <<EOF
+$out
+EOF
+    [ -n "$tab_id" ] && [ -n "$pane_id" ] || return 1
+  fi
+  if ! fm_backend_herdr_cli "$session" pane rename "$pane_id" "$label" >/dev/null 2>&1; then
+    fm_backend_herdr_cli "$session" pane close "$pane_id" >/dev/null 2>&1 || true
+    return 1
+  fi
+  if ! out=$(fm_backend_herdr_cli "$session" pane get "$pane_id" 2>/dev/null); then
+    fm_backend_herdr_cli "$session" pane close "$pane_id" >/dev/null 2>&1 || true
+    return 1
+  fi
+  actual_pane=$(printf '%s' "$out" | jq -r '.result.pane.pane_id // empty' 2>/dev/null)
+  actual_tab=$(printf '%s' "$out" | jq -r '.result.pane.tab_id // empty' 2>/dev/null)
+  if [ "$actual_pane" != "$pane_id" ] || [ "$actual_tab" != "$tab_id" ]; then
+    fm_backend_herdr_cli "$session" pane close "$pane_id" >/dev/null 2>&1 || true
+    return 1
+  fi
+  printf '%s %s' "$tab_id" "$pane_id"
+}
+
 # fm_backend_herdr_projection_create_task: create one disposable presentation
 # workspace and its normal fm-<id> task tab without looking up, adopting, or
 # reusing any existing workspace.
@@ -3817,26 +3933,38 @@ EOF
   return 1
 }
 
-# fm_backend_herdr_list_live: recovery/orphan discovery. Lists every tab whose
-# label looks like a firstmate task window (fm-<id>) in <session>'s, THIS
-# HOME'S OWN workspace (fm_backend_herdr_workspace_label - never another
-# home's), by LABEL - never by trusting a stored pane id, since ids are not
-# guaranteed stable across every server lifecycle (see herdr-verification-p2.md
-# "ID stability"). A caller running as a given home (e.g. a secondmate
-# recovering its own in-flight work) naturally scopes to that home's own
-# workspace because FM_HOME already names it - no glue needed, unlike the
-# primary-spawns-a-secondmate path in fm-spawn.sh. Read-only: a session/
-# workspace that does not exist yet simply lists nothing. One
-# "<session>:<pane_id>\t<label>" line per live task tab.
+# fm_backend_herdr_list_live: recovery/orphan discovery. Lists every task pane
+# whose pane label (visual layout) or tab label (ordinary layout) looks like a
+# firstmate task window (fm-<id>) in <session>'s, THIS HOME'S OWN workspace
+# (fm_backend_herdr_workspace_label - never another home's), by label - never
+# by trusting a stored pane id, since ids are not guaranteed stable across every
+# server lifecycle (see herdr-verification-p2.md "ID stability"). A caller
+# running as a given home (e.g. a secondmate recovering its own in-flight work)
+# naturally scopes to that home's own workspace because FM_HOME already names it
+# - no glue needed, unlike the primary-spawns-a-secondmate path in fm-spawn.sh.
+# Read-only: a session/workspace that does not exist yet simply lists nothing.
+# One "<session>:<pane_id>\t<label>" line per live task pane.
 fm_backend_herdr_list_live() {  # <session>
-  local session=$1 wsid tabs tab_id label pane_id
+  local session=$1 wsid tabs panes tab_id label pane_id seen_panes=""
   wsid=$(fm_backend_herdr_workspace_find "$session") || return 0
   [ -n "$wsid" ] || return 0
   tabs=$(fm_backend_herdr_cli "$session" tab list --workspace "$wsid" 2>/dev/null) || return 0
+  panes=$(fm_backend_herdr_cli "$session" pane list --workspace "$wsid" 2>/dev/null) || return 0
+  while IFS=$'\t' read -r pane_id label; do
+    [ -n "$pane_id" ] && [ -n "$label" ] || continue
+    printf '%s:%s\t%s\n' "$session" "$pane_id" "$label"
+    seen_panes="${seen_panes}"$'\n'"${pane_id}"$'\n'
+  done < <(printf '%s' "$panes" | jq -r '
+    .result.panes[]?
+    | select((.label | type) == "string" and (.label | startswith("fm-")))
+    | "\(.pane_id)\t\(.label)"
+  ' 2>/dev/null)
   while IFS=$'\t' read -r tab_id label; do
     [ -n "$tab_id" ] || continue
-    pane_id=$(fm_backend_herdr_pane_for_tab "$session" "$wsid" "$tab_id") || continue
+    pane_id=$(printf '%s' "$panes" | jq -r --arg tab "$tab_id" \
+      '.result.panes[]? | select(.tab_id == $tab) | .pane_id' 2>/dev/null | head -1)
     [ -n "$pane_id" ] || continue
+    case "$seen_panes" in *$'\n'"$pane_id"$'\n'*) continue ;; esac
     printf '%s:%s\t%s\n' "$session" "$pane_id" "$label"
   done < <(printf '%s' "$tabs" | jq -r '.result.tabs[]? | select(.label | startswith("fm-")) | "\(.tab_id)\t\(.label)"' 2>/dev/null)
 }

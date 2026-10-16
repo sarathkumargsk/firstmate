@@ -361,6 +361,70 @@ assert_contains_local() { case "$1" in *"$2"*) : ;; *) fail "$3"$'\n'"--- got --
 assert_contains_local "$live" "$LABEL2" "list_live did not report the freshly created task tab by label"
 pass "real herdr: list_live discovers a live task tab by fm-<id> label"
 
+# --- visual mode --------------------------------------------------------------
+
+# The production spawn path writes this exact metadata after the first visual
+# endpoint is created. Reproduce only that durable boundary here, then let the
+# adapter prove that the next endpoint splits the recorded pane instead of
+# guessing from a user-visible label.
+VISUAL_STATE="$SM_SCRATCH/visual-state"
+mkdir -p "$VISUAL_STATE"
+VISUAL_ROOT_LABEL="fm-visual-root"
+VISUAL_ROOT_IDS=$(fm_backend_herdr_visual_create_task \
+  "$CONTAINER" "$VISUAL_ROOT_LABEL" /tmp "$VISUAL_STATE") \
+  || fail "visual root task creation failed"
+read -r VISUAL_TAB_ID VISUAL_ROOT_PANE_ID <<EOF
+$VISUAL_ROOT_IDS
+EOF
+[ -n "$VISUAL_TAB_ID" ] && [ -n "$VISUAL_ROOT_PANE_ID" ] \
+  || fail "visual root task did not return a tab and pane"
+cat > "$VISUAL_STATE/root.meta" <<EOF
+backend=herdr
+herdr_visual_mode=on
+herdr_session=$SESSION
+herdr_workspace_id=${CONTAINER#*:}
+herdr_tab_id=$VISUAL_TAB_ID
+herdr_pane_id=$VISUAL_ROOT_PANE_ID
+EOF
+VISUAL_SIBLING_LABEL="fm-visual-sibling"
+VISUAL_SIBLING_IDS=$(fm_backend_herdr_visual_create_task \
+  "$CONTAINER" "$VISUAL_SIBLING_LABEL" /tmp "$VISUAL_STATE") \
+  || fail "visual sibling task creation failed"
+read -r VISUAL_SIBLING_TAB_ID VISUAL_SIBLING_PANE_ID <<EOF
+$VISUAL_SIBLING_IDS
+EOF
+[ "$VISUAL_SIBLING_TAB_ID" = "$VISUAL_TAB_ID" ] \
+  || fail "visual sibling did not join the root task tab"
+VISUAL_PANES=$(herdr pane list --workspace "${CONTAINER#*:}" --session "$SESSION") \
+  || fail "could not list the real visual panes"
+printf '%s' "$VISUAL_PANES" | jq -e \
+  --arg tab "$VISUAL_TAB_ID" \
+  --arg root "$VISUAL_ROOT_PANE_ID" \
+  --arg sibling "$VISUAL_SIBLING_PANE_ID" \
+  --arg root_label "$VISUAL_ROOT_LABEL" \
+  --arg sibling_label "$VISUAL_SIBLING_LABEL" '
+    [.result.panes[]?
+      | select(.tab_id == $tab)
+      | select((.pane_id == $root and .label == $root_label)
+        or (.pane_id == $sibling and .label == $sibling_label))]
+    | length == 2
+  ' >/dev/null 2>&1 \
+  || fail "visual task panes did not retain their exact recorded labels in one tab"
+herdr pane focus --pane "$VISUAL_ROOT_PANE_ID" --direction right --session "$SESSION" >/dev/null \
+  || fail "native visual pane navigation failed"
+herdr pane zoom "$VISUAL_SIBLING_PANE_ID" --on --session "$SESSION" >/dev/null \
+  || fail "native visual pane zoom failed"
+herdr pane zoom "$VISUAL_SIBLING_PANE_ID" --off --session "$SESSION" >/dev/null \
+  || fail "native visual pane unzoom failed"
+fm_backend_herdr_kill "$SESSION:$VISUAL_SIBLING_PANE_ID"
+herdr pane get "$VISUAL_ROOT_PANE_ID" --session "$SESSION" >/dev/null 2>&1 \
+  || fail "removing a visual sibling also removed the root pane"
+if herdr pane get "$VISUAL_SIBLING_PANE_ID" --session "$SESSION" >/dev/null 2>&1; then
+  fail "removing a visual sibling left its exact pane behind"
+fi
+pass "real herdr: visual tasks share one labeled split-pane tab, keep native navigation and zoom, and remove only the requested pane"
+
+fm_backend_herdr_kill "$SESSION:$VISUAL_ROOT_PANE_ID"
 fm_backend_herdr_kill "$SESSION:$PANE_ID2"
 
 cleanup_all

@@ -520,6 +520,7 @@ PROJECT_DIR="$TMP_ROOT/project"
 RECOVERY_PROJECT_DIR="$TMP_ROOT/recovery-project"
 mkdir -p "$HOME_DIR/state" "$HOME_DIR/config" \
   "$HOME_DIR/data/anchor" "$HOME_DIR/data/shape" \
+  "$HOME_DIR/data/visual-a" "$HOME_DIR/data/visual-b" \
   "$HOME_DIR/data/order-a" "$HOME_DIR/data/order-b" \
   "$HOME_DIR/data/order-fail" "$HOME_DIR/data/fm-hibit-resume-r1" \
   "$HOME_DIR/data/wheelhouse-healing-r1"
@@ -531,6 +532,8 @@ touch "$HOME_DIR/state/.last-watcher-beat"
 printf 'off\n' > "$HOME_DIR/config/herdr-presentation-spaces"
 write_ship_brief "$HOME_DIR" anchor 'Projection anchor fixture.'
 write_ship_brief "$HOME_DIR" shape 'Projection E2E fixture.'
+write_ship_brief "$HOME_DIR" visual-a 'Shared visual-pane fixture A.'
+write_ship_brief "$HOME_DIR" visual-b 'Shared visual-pane fixture B.'
 write_ship_brief "$HOME_DIR" order-a 'Projection ordering fixture A.'
 write_ship_brief "$HOME_DIR" order-b 'Projection ordering fixture B.'
 write_ship_brief "$HOME_DIR" order-fail 'Projection ordering failure fixture.'
@@ -575,6 +578,53 @@ fi
 pass "real Herdr lab: an opted-out spawn retains the Stage 1 Herdr command sequence with zero ordering calls"
 teardown_task shape "$HOME_DIR" > "$TMP_ROOT/off-teardown.out" 2> "$TMP_ROOT/off-teardown.err" \
   || fail "opted-out teardown failed: $(cat "$TMP_ROOT/off-teardown.err")"
+
+# The explicit visual preference keeps the ordinary workspace but gives both
+# workers one native split-pane tab. It is deliberately tested through
+# fm-spawn, not only the adapter, because metadata is the durable ownership
+# proof that makes later tasks join the shared tab.
+printf 'on\n' > "$HOME_DIR/config/herdr-visual-mode"
+spawn_task visual-a "$HOME_DIR" "$PROJECT_DIR" > "$TMP_ROOT/visual-a.out" 2> "$TMP_ROOT/visual-a.err" \
+  || fail "visual root spawn failed: $(cat "$TMP_ROOT/visual-a.err")"
+VISUAL_A_META="$HOME_DIR/state/visual-a.meta"
+VISUAL_A_WT=$(remember_meta_worktree "$VISUAL_A_META")
+spawn_task visual-b "$HOME_DIR" "$PROJECT_DIR" > "$TMP_ROOT/visual-b.out" 2> "$TMP_ROOT/visual-b.err" \
+  || fail "visual sibling spawn failed: $(cat "$TMP_ROOT/visual-b.err")"
+VISUAL_B_META="$HOME_DIR/state/visual-b.meta"
+VISUAL_B_WT=$(remember_meta_worktree "$VISUAL_B_META")
+VISUAL_A_TAB=$(grep '^herdr_tab_id=' "$VISUAL_A_META" | cut -d= -f2-)
+VISUAL_B_TAB=$(grep '^herdr_tab_id=' "$VISUAL_B_META" | cut -d= -f2-)
+VISUAL_A_PANE=$(grep '^herdr_pane_id=' "$VISUAL_A_META" | cut -d= -f2-)
+VISUAL_B_PANE=$(grep '^herdr_pane_id=' "$VISUAL_B_META" | cut -d= -f2-)
+[ "$VISUAL_A_TAB" = "$VISUAL_B_TAB" ] \
+  || fail "visual tasks did not record the same shared Herdr tab"
+[ "$VISUAL_A_PANE" != "$VISUAL_B_PANE" ] \
+  || fail "visual tasks did not record distinct Herdr panes"
+grep -qx 'herdr_visual_mode=on' "$VISUAL_A_META" \
+  || fail "visual root metadata did not retain its layout choice"
+grep -qx 'herdr_visual_mode=on' "$VISUAL_B_META" \
+  || fail "visual sibling metadata did not retain its layout choice"
+VISUAL_PANES=$(lab pane list --workspace "$FIRSTMATE_WSID") \
+  || fail "could not list the live visual panes"
+printf '%s' "$VISUAL_PANES" | jq -e \
+  --arg tab "$VISUAL_A_TAB" \
+  --arg first "$VISUAL_A_PANE" \
+  --arg second "$VISUAL_B_PANE" '
+    [.result.panes[]?
+      | select(.tab_id == $tab and (.pane_id == $first or .pane_id == $second))]
+    | length == 2
+  ' >/dev/null 2>&1 \
+  || fail "visual task panes are not both live in their recorded shared tab"
+grep -F $'pane\tsplit' "$HERDR_CALL_LOG" | tail -n 1 | grep -F "$VISUAL_A_PANE" >/dev/null 2>&1 \
+  || fail "visual sibling did not split the recorded root pane"
+pass "real Herdr lab: explicit visual mode creates labeled sibling panes in one durable tab through fm-spawn"
+teardown_task visual-b "$HOME_DIR" > "$TMP_ROOT/visual-b-teardown.out" 2> "$TMP_ROOT/visual-b-teardown.err" \
+  || fail "visual sibling teardown failed: $(cat "$TMP_ROOT/visual-b-teardown.err")"
+lab pane get "$VISUAL_A_PANE" >/dev/null 2>&1 \
+  || fail "visual sibling teardown removed the root pane"
+teardown_task visual-a "$HOME_DIR" > "$TMP_ROOT/visual-a-teardown.out" 2> "$TMP_ROOT/visual-a-teardown.err" \
+  || fail "visual root teardown failed: $(cat "$TMP_ROOT/visual-a-teardown.err")"
+rm -f "$HOME_DIR/config/herdr-visual-mode"
 
 # A home that configured nothing at all follows the version floor: it is
 # projected on a release at or above it, and takes the ordinary flat layout with

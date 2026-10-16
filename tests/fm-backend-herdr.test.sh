@@ -1542,6 +1542,101 @@ test_create_task_creates_with_no_focus_flag() {
   pass "fm_backend_herdr_create_task: tab create passes --no-focus"
 }
 
+# --- explicit shared split-pane visual layout --------------------------------
+
+test_visual_preference_is_explicit_and_default_off() {
+  local dir config out err
+  dir="$TMP_ROOT/visual-preference"; config="$dir/config"; mkdir -p "$config"
+  out=$(bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_visual_preference "$1"' "$ROOT" "$config")
+  [ "$out" = off ] || fail "missing visual preference should preserve the ordinary layout, got '$out'"
+  : > "$config/herdr-visual-mode"
+  out=$(bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_visual_preference "$1"' "$ROOT" "$config")
+  [ "$out" = off ] || fail "empty visual preference should remain off, got '$out'"
+  printf 'on\n' > "$config/herdr-visual-mode"
+  out=$(bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_visual_enabled "$1"' "$ROOT" "$config"; echo $?)
+  [ "$out" = 0 ] || fail "explicit on should enable the shared visual layout"
+  printf 'unknown\n' > "$config/herdr-visual-mode"
+  err=$(bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_visual_preference "$1"' "$ROOT" "$config" 2>&1)
+  assert_contains "$err" "unrecognized value" "invalid visual preference should be visible"
+  assert_contains "$err" "off" "invalid visual preference should remain off"
+  pass "fm_backend_herdr_visual_preference: is default-off, explicit, and tolerant of an invalid local preference"
+}
+
+test_visual_create_uses_a_normal_first_task_then_splits_a_recorded_visual_pane() {
+  local dir log resp fb state first second
+  dir="$TMP_ROOT/visual-create"; mkdir -p "$dir/responses" "$dir/state"; log="$dir/log"; resp="$dir/responses"; state="$dir/state"; : > "$log"
+  printf '{"result":{"tabs":[]}}\n' > "$resp/1.out"
+  printf '{"result":{"tab":{"tab_id":"w1:t1"},"root_pane":{"pane_id":"w1:p1"}}}\n' > "$resp/2.out"
+  printf '{"result":{"pane":{"pane_id":"w1:p1","tab_id":"w1:t1"}}}\n' > "$resp/4.out"
+  fb=$(make_herdr_fakebin "$dir")
+  first=$(PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_visual_create_task fmtest:w1 fm-first /proj "$1"' "$ROOT" "$state") \
+    || fail "first visual task should create the normal root tab"
+  [ "$first" = "w1:t1 w1:p1" ] || fail "first visual task returned '$first', expected the root tab and pane"
+  assert_contains "$(cat "$log")" $'\x1f''tab'$'\x1f''create' "first visual task did not use ordinary safe tab creation"
+  assert_contains "$(cat "$log")" $'\x1f''pane'$'\x1f''rename'$'\x1f''w1:p1'$'\x1f''fm-first' "first visual task did not label its root pane"
+
+  cat > "$state/first.meta" <<'EOF'
+backend=herdr
+herdr_visual_mode=on
+herdr_session=fmtest
+herdr_workspace_id=w1
+herdr_tab_id=w1:t1
+herdr_pane_id=w1:p1
+EOF
+  rm -f "$resp"/* "$resp/.count"; : > "$log"
+  printf '{"result":{"pane":{"pane_id":"w1:p1","workspace_id":"w1","tab_id":"w1:t1"}}}\n' > "$resp/1.out"
+  printf '{"result":{"pane":{"pane_id":"w1:p2","tab_id":"w1:t1"}}}\n' > "$resp/2.out"
+  printf '{"result":{"pane":{"pane_id":"w1:p2","tab_id":"w1:t1"}}}\n' > "$resp/4.out"
+  second=$(PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_visual_create_task fmtest:w1 fm-second /proj "$1"' "$ROOT" "$state") \
+    || fail "second visual task should split the recorded visual pane"
+  [ "$second" = "w1:t1 w1:p2" ] || fail "second visual task returned '$second', expected the shared tab and new pane"
+  assert_contains "$(cat "$log")" $'\x1f''pane'$'\x1f''split'$'\x1f''w1:p1'$'\x1f''--direction'$'\x1f''right'$'\x1f''--cwd'$'\x1f''/proj'$'\x1f''--no-focus' \
+    "second visual task did not make a non-focusing sibling pane"
+  assert_contains "$(cat "$log")" $'\x1f''pane'$'\x1f''rename'$'\x1f''w1:p2'$'\x1f''fm-second' "second visual task did not label its pane"
+  assert_not_contains "$(cat "$log")" $'\x1f''tab'$'\x1f''create' "second visual task must not create another tab"
+  pass "fm_backend_herdr_visual_create_task: keeps workers in one task tab with labeled native split panes"
+
+  rm -f "$resp"/* "$resp/.count"; : > "$log"
+  printf '{"result":{"pane":{"pane_id":"w1:p1","workspace_id":"w1","tab_id":"w1:foreign"}}}\n' > "$resp/1.out"
+  if PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_visual_root "$1" fmtest w1' "$ROOT" "$state" >/dev/null; then
+    fail "visual root discovery must not use a task pane that was moved to another tab"
+  fi
+  pass "fm_backend_herdr_visual_root: requires the recorded pane, workspace, and tab before splitting"
+}
+
+test_visual_create_removes_an_unpublished_pane_when_response_verification_fails() {
+  local dir log resp fb state
+  dir="$TMP_ROOT/visual-cleanup"; mkdir -p "$dir/responses" "$dir/state"; log="$dir/log"; resp="$dir/responses"; state="$dir/state"; : > "$log"
+  printf '{"result":{"tabs":[]}}\n' > "$resp/1.out"
+  printf '{"result":{"tab":{"tab_id":"w1:t1"},"root_pane":{"pane_id":"w1:p1"}}}\n' > "$resp/2.out"
+  printf '{"result":{"pane":{"pane_id":"w1:wrong","tab_id":"w1:t1"}}}\n' > "$resp/4.out"
+  fb=$(make_herdr_fakebin "$dir")
+  if PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_visual_create_task fmtest:w1 fm-first /proj "$1"' "$ROOT" "$state" >/dev/null; then
+    fail "visual creation must reject a pane response that does not name the pane it created"
+  fi
+  assert_contains "$(cat "$log")" $'\x1f''pane'$'\x1f''close'$'\x1f''w1:p1' \
+    "visual creation must close a pane it could not verify before publishing it"
+  pass "fm_backend_herdr_visual_create_task: removes an unpublished pane when response verification fails"
+}
+
+test_list_live_includes_labeled_visual_panes_without_duplication() {
+  local dir log resp fb out
+  dir="$TMP_ROOT/visual-list-live"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  printf '{"result":{"workspaces":[{"workspace_id":"w1","label":"firstmate"}]}}\n' > "$resp/1.out"
+  printf '{"result":{"tabs":[{"tab_id":"w1:t1","workspace_id":"w1","label":"fm-first"}]}}\n' > "$resp/2.out"
+  printf '{"result":{"panes":[{"pane_id":"w1:p1","tab_id":"w1:t1","label":"fm-first"},{"pane_id":"w1:p2","tab_id":"w1:t1","label":"fm-second"}]}}\n' > "$resp/3.out"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$(PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_list_live fmtest' "$ROOT")
+  [ "$out" = $'fmtest:w1:p1\tfm-first\nfmtest:w1:p2\tfm-second' ] \
+    || fail "visual recovery inventory should list each labeled pane once, got '$out'"
+  pass "fm_backend_herdr_list_live: includes each labeled shared-layout pane once alongside ordinary tabs"
+}
+
 # --- default-on disposable presentation projection --------------------------
 
 # make_release_fakebin: a `herdr` stub whose only job is `status --json`, so the
@@ -5944,6 +6039,10 @@ test_create_task_refuses_when_agent_state_ambiguous
 test_create_task_husk_replacement_creates_before_closing
 test_create_task_creates_and_parses_ids
 test_create_task_creates_with_no_focus_flag
+test_visual_preference_is_explicit_and_default_off
+test_visual_create_uses_a_normal_first_task_then_splits_a_recorded_visual_pane
+test_visual_create_removes_an_unpublished_pane_when_response_verification_fails
+test_list_live_includes_labeled_visual_panes_without_duplication
 test_presentation_defaults_on_at_or_above_the_floor
 test_presentation_default_falls_back_below_the_floor
 test_presentation_unreadable_release_falls_back
