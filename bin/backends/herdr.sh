@@ -2660,23 +2660,16 @@ fm_backend_herdr_visual_zoom_snapshot() {  # <session> <pane>
     | jq -r '.result.layout | select(.zoomed == true) | .focused_pane_id // empty' 2>/dev/null
 }
 
-fm_backend_herdr_visual_zoom_restore() {  # <session> <zoomed-pane>
-  [ -n "$2" ] || return 0
+# Zooming a pane makes Herdr switch to that pane's tab, so the restore puts
+# the user's active workspace and tab back afterwards and skips the zoom when
+# that focus cannot be read first. Nothing is zoomed again when the zoomed
+# pane is the one that was just closed.
+fm_backend_herdr_visual_zoom_restore() {  # <session> <zoomed-pane> [<closed-pane>]
+  local before
+  [ -n "$2" ] && [ "$2" != "${3:-}" ] || return 0
+  before=$(fm_backend_herdr_projection_focus_snapshot "$1") || return 0
   fm_backend_herdr_cli "$1" pane zoom "$2" --on >/dev/null 2>&1 || true
-}
-
-# fm_backend_herdr_kill_keeping_zoom: the backend kill entry point. It runs
-# fm_backend_herdr_kill unchanged between a zoom snapshot and its restore, so
-# tearing down one worker in the shared visual tab leaves another selected
-# worker zoomed. A closed zoomed pane simply cannot be zoomed again.
-fm_backend_herdr_kill_keeping_zoom() {  # <target>
-  local session=${1%%:*} zoomed="" status=0
-  if fm_backend_herdr_parse_target "$1"; then
-    zoomed=$(fm_backend_herdr_visual_zoom_snapshot "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE")
-  fi
-  fm_backend_herdr_kill "$@" || status=$?
-  fm_backend_herdr_visual_zoom_restore "$session" "$zoomed"
-  return "$status"
+  fm_backend_herdr_projection_focus_restore "$1" "$before" "visual zoom restore" || true
 }
 
 # fm_backend_herdr_visual_abandon_pane: close an unpublished task pane after a
@@ -2795,7 +2788,7 @@ EOF
     [ -n "$dup" ] || continue
     dup_zoomed=$(fm_backend_herdr_visual_zoom_snapshot "$session" "$dup")
     fm_backend_herdr_cli "$session" pane close "$dup" >/dev/null 2>&1 || true
-    fm_backend_herdr_visual_zoom_restore "$session" "$dup_zoomed"
+    fm_backend_herdr_visual_zoom_restore "$session" "$dup_zoomed" "$dup"
   done <<EOF
 $dup_panes
 EOF
@@ -3807,6 +3800,8 @@ fm_backend_herdr_send_text_submit() {  # <target> <text> <retries> <enter-sleep>
 fm_backend_herdr_kill_serialized() {  # <session> <pane>
   local session=$1 pane=$2
   local before active_tab info target_pane target_tab target_ws plan shell_pid plan_move_record close_failed workspace_presence
+  local zoomed
+  zoomed=$(fm_backend_herdr_visual_zoom_snapshot "$session" "$pane")
   before=$(fm_backend_herdr_projection_focus_snapshot "$session") || before=
   if [ -n "$before" ]; then
     active_tab=${before#*$'\t'}
@@ -3846,11 +3841,13 @@ fm_backend_herdr_kill_serialized() {  # <session> <pane>
       if [ "$close_failed" = 1 ]; then
         fm_backend_herdr_emptying_move_rollback "$plan_move_record" || true
       fi
+      fm_backend_herdr_visual_zoom_restore "$session" "$zoomed" "$pane"
       fm_backend_herdr_projection_focus_restore "$session" "$before" "task kill" || true
       return 0
     fi
   fi
   fm_backend_herdr_explicit_close_pane_confirmed "$session" "$pane" || true
+  fm_backend_herdr_visual_zoom_restore "$session" "$zoomed" "$pane"
 }
 
 fm_backend_herdr_kill() {  # <target>
