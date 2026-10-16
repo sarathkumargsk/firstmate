@@ -1362,7 +1362,7 @@ spawn_abort_cleanup() {
   fi
   if [ "$HERDR_PROJECTION_ABORT_CLEANUP" = 1 ] &&
     [ "$HERDR_PRESENTATION_ORDER_LOCK_HELD" != 1 ]; then
-    if ! spawn_herdr_layout_lock_acquire "${HERDR_PROJECTION_ABORT_SESSION:-}"; then
+    if ! spawn_herdr_presentation_order_lock_acquire "${HERDR_PROJECTION_ABORT_SESSION:-}"; then
       echo "warning: herdr presentation focus lock unavailable; retaining the projection journal and refusing concurrent abort cleanup" >&2
       HERDR_PROJECTION_ABORT_CLEANUP=0
     fi
@@ -1482,22 +1482,20 @@ spawn_abort_cleanup() {
 trap spawn_abort_cleanup EXIT
 
 # One lock per live Herdr session/socket, shared across all homes. <session>
-# is required so secondmate and primary spawns serialize presentation and visual
-# layout mutations against the same session without writing any other home's
-# state directory.
+# is required so secondmate and primary spawns serialize against the same
+# session without writing any other home's state directory.
 #
-# Default mode is one BOUNDED attempt. Presentation uses that default and falls
-# back to the ordinary flat layout on contention. Visual layout and exact resume
-# instead report the contention because silently creating a separate tab would
-# break the opted-in shared layout. Passing mode `wait` makes this call WAIT for
-# the lock (`fm_lock_acquire_wait`, the same unbounded-wait idiom this file
-# already uses for its other fleet-shared locks). Only the recovery path under
-# the explicit --herdr-resume-lock-wait opt-in passes `wait`, so unbounded
-# blocking on a third-party session lock never becomes the default for every
-# caller.
+# Default mode is one BOUNDED attempt. A clean create uses that default and
+# falls back to the ordinary flat layout on contention. An exact resume also
+# defaults to the bounded attempt and hard-refuses on contention (it does not
+# degrade flat). Passing mode `wait` makes this call WAIT for the lock instead
+# (`fm_lock_acquire_wait`, the same unbounded-wait idiom this file already uses
+# for its other fleet-shared locks). Only the recovery path under the explicit
+# --herdr-resume-lock-wait opt-in passes `wait`, so unbounded blocking on a
+# third-party session lock never becomes the default for every caller.
 # Dead-owner reclaim inside `fm_lock_try_acquire` still bounds a wait against a
 # holder that crashed mid-hold.
-spawn_herdr_layout_lock_acquire() {
+spawn_herdr_presentation_order_lock_acquire() {
   local session=${1:-} mode=${2:-} attempt lock_path
   [ -n "$session" ] || session=$(fm_backend_herdr_session)
   lock_path=$(fm_backend_herdr_presentation_session_lock_path "$session") || return 1
@@ -1546,7 +1544,7 @@ $(fm_control_harness_wiring_paths "$harness" "$wt" "$state" "$id" "$kind")
 EOF
 }
 
-spawn_herdr_layout_lock_release() {
+spawn_herdr_presentation_order_lock_release() {
   [ "$HERDR_PRESENTATION_ORDER_LOCK_HELD" = 1 ] || return 0
   HERDR_PRESENTATION_ORDER_LOCK_HELD=0
   fm_lock_release "$HERDR_PRESENTATION_ORDER_LOCK" || true
@@ -1960,6 +1958,8 @@ if [ "$RELAUNCH" -eq 1 ]; then
     HERDR_WORKSPACE_ID=$(fm_meta_get "$RELAUNCH_META" herdr_workspace_id)
     HERDR_TAB_ID=$(fm_meta_get "$RELAUNCH_META" herdr_tab_id)
     HERDR_PANE_ID=$(fm_meta_get "$RELAUNCH_META" herdr_pane_id)
+    HERDR_VISUAL_LAYOUT=off
+    [ "$(fm_meta_get "$RELAUNCH_META" herdr_visual_mode)" != on ] || HERDR_VISUAL_LAYOUT=on
   fi
   # With no explicit harness, a relaunch reuses the harness already recorded
   # for this task. It must NOT fall through to the fresh-spawn config
@@ -3807,16 +3807,12 @@ if [ "$RELAUNCH" -eq 1 ]; then
     HERDR_SEEDED_DEFAULT_TAB_ID=${HERDR_CONTAINER_RAW#*$'\t'}
     HERDR_SES=${CONTAINER%%:*}
     HERDR_WORKSPACE_ID=${CONTAINER#*:}
-    if [ "$(fm_meta_get "$RELAUNCH_META" herdr_visual_mode)" = on ]; then
-      spawn_herdr_layout_lock_acquire "$HERDR_SES" || {
-        echo "error: herdr visual mode could not reserve the shared pane layout; retry the relaunch" >&2
-        exit 1
-      }
+    if [ "$HERDR_VISUAL_LAYOUT" = on ]; then
       HERDR_TASK_IDS=$(fm_backend_herdr_visual_create_task "$CONTAINER" "$W" "$WT" "$STATE" "$HERDR_SEEDED_DEFAULT_TAB_ID") || exit 1
-      HERDR_VISUAL_LAYOUT=on
+      HERDR_VISUAL_LAYOUT=${HERDR_TASK_IDS##* }
+      HERDR_TASK_IDS=${HERDR_TASK_IDS% *}
     else
       HERDR_TASK_IDS=$(fm_backend_herdr_create_task "$CONTAINER" "$W" "$WT" "$HERDR_SEEDED_DEFAULT_TAB_ID") || exit 1
-      HERDR_VISUAL_LAYOUT=off
     fi
     read -r HERDR_TAB_ID HERDR_PANE_ID <<EOF
 $HERDR_TASK_IDS
@@ -3885,12 +3881,12 @@ else
         # Refuse-by-default on contention. Wait only when the caller opted in
         # with --herdr-resume-lock-wait (see header).
         if [ "$HERDR_RESUME_LOCK_WAIT" = 1 ]; then
-          spawn_herdr_layout_lock_acquire "$HERDR_SES" wait || {
+          spawn_herdr_presentation_order_lock_acquire "$HERDR_SES" wait || {
             echo "error: herdr presentation recovery could not resolve its session lock" >&2
             exit 1
           }
         else
-          spawn_herdr_layout_lock_acquire "$HERDR_SES" || {
+          spawn_herdr_presentation_order_lock_acquire "$HERDR_SES" || {
             echo "error: herdr presentation recovery could not acquire its session lock; refusing a concurrent resume" >&2
             exit 1
           }
@@ -3921,12 +3917,12 @@ else
             HERDR_PROJECTION_ABORT_SEEDED_PANE=""
             ;;
           2)
-            spawn_herdr_layout_lock_release
+            spawn_herdr_presentation_order_lock_release
             ;;
           *) exit 1 ;;
           esac
         else
-          spawn_herdr_layout_lock_release
+          spawn_herdr_presentation_order_lock_release
         fi
       elif [ ! -e "$STATE/$ID.meta" ] && [ ! -L "$STATE/$ID.meta" ]; then
         # Session lock path resolution and exact parent binding both need a
@@ -3936,7 +3932,7 @@ else
         elif [ "${FM_BACKEND_HERDR_PRESENTATION_PREFERENCE:-default}" = default ] &&
           ! fm_backend_herdr_presentation_default_supported "$STATE" "$HERDR_SES"; then
           :
-        elif spawn_herdr_layout_lock_acquire "$HERDR_SES"; then
+        elif spawn_herdr_presentation_order_lock_acquire "$HERDR_SES"; then
           # The projected child is placed and bound UNDER this launcher's exact
           # parent workspace. Its own herdr pane identity names that workspace
           # directly; the label lookup is only the fallback for a launcher with
@@ -3951,13 +3947,13 @@ else
           2) HERDR_PARENT_WORKSPACE_ID=$(fm_backend_herdr_projection_parent_workspace_exact \
             "$HERDR_SES" "$HERDR_PARENT_LABEL" 2>/dev/null || true) ;;
           *)
-            spawn_herdr_layout_lock_release
+            spawn_herdr_presentation_order_lock_release
             exit 1
             ;;
           esac
           if [ -z "$HERDR_PARENT_WORKSPACE_ID" ]; then
             echo "warning: herdr presentation parent is absent or ambiguous; using the ordinary flat layout without projection" >&2
-            spawn_herdr_layout_lock_release
+            spawn_herdr_presentation_order_lock_release
           else
             HERDR_PROJECTION_ID=$(fm_backend_herdr_projection_journal_create "$STATE" "$ID") || exit 1
             HERDR_PROJECTION_LABEL=$(fm_backend_herdr_projection_workspace_label "$ID" "$HERDR_PROJECTION_ID")
@@ -4016,11 +4012,9 @@ else
       HERDR_SES=${CONTAINER%%:*}
       HERDR_WORKSPACE_ID=${CONTAINER#*:}
       if [ "$HERDR_VISUAL_LAYOUT" = on ]; then
-        spawn_herdr_layout_lock_acquire "$HERDR_SES" || {
-          echo "error: herdr visual mode could not reserve the shared pane layout; retry the spawn" >&2
-          exit 1
-        }
         HERDR_TASK_IDS=$(FM_HOME="$HERDR_LABEL_HOME" fm_backend_herdr_visual_create_task "$CONTAINER" "$W" "$PROJ_ABS" "$STATE" "$HERDR_SEEDED_DEFAULT_TAB_ID") || exit 1
+        HERDR_VISUAL_LAYOUT=${HERDR_TASK_IDS##* }
+        HERDR_TASK_IDS=${HERDR_TASK_IDS% *}
       else
         HERDR_TASK_IDS=$(FM_HOME="$HERDR_LABEL_HOME" fm_backend_herdr_create_task "$CONTAINER" "$W" "$PROJ_ABS" "$HERDR_SEEDED_DEFAULT_TAB_ID") || exit 1
       fi
@@ -5274,7 +5268,7 @@ preserve_relaunch_meta() {
     echo "herdr_workspace_id=$HERDR_WORKSPACE_ID"
     echo "herdr_tab_id=$HERDR_TAB_ID"
     echo "herdr_pane_id=$HERDR_PANE_ID"
-    [ "${HERDR_VISUAL_LAYOUT:-off}" = on ] && echo "herdr_visual_mode=on"
+    [ "${HERDR_VISUAL_LAYOUT:-off}" != on ] || echo "herdr_visual_mode=on"
   fi
   if [ "$BACKEND" = zellij ]; then
     echo "zellij_session=$ZELLIJ_SES"
@@ -5368,9 +5362,6 @@ if [ "$RELAUNCH" -eq 1 ]; then
   RELAUNCH_REPLACEMENT_PENDING=0
   SPAWN_META_PUBLISH_STARTED=0
   SPAWN_META_TMP=
-fi
-if [ "${HERDR_VISUAL_LAYOUT:-off}" = on ]; then
-  spawn_herdr_layout_lock_release
 fi
 # A dispatch or relaunch keeps the per-task meta lock through launch delivery.
 # The backlog mutation is deliberately the final fallible commit below, so
@@ -5729,7 +5720,7 @@ spawn_send_literal "$T" ". $(shell_quote "$LAUNCH_FILE")"
 sleep 0.3
 if [ "${HERDR_PROJECTED:-0}" -eq 1 ]; then
   HERDR_PROJECTION_ABORT_CLEANUP=0
-  spawn_herdr_layout_lock_release
+  spawn_herdr_presentation_order_lock_release
 fi
 spawn_send_key "$T" Enter
 if [ "$HARNESS" = kimi ]; then

@@ -496,7 +496,13 @@ Any of these preserves the candidate and lets session startup continue with at m
 Its default is off, so absent, empty, or `off` preserves the existing task-tab layout.
 Write `on` to place newly launched crewmates and scouts as labeled sibling panes in one existing task tab in the home workspace.
 The first visual worker creates that tab, and later workers split a currently recorded visual worker pane rather than using a label lookup.
+Each new worker splits the widest recorded visual pane, to the right when that pane is at least twice as wide as it is tall and downward otherwise, so the workers fill a grid.
+A split must leave both halves at least 60 columns wide and 15 rows tall.
+When no recorded visual pane has that room, the worker warns and opens an ordinary task tab outside the visual layout.
+Spawns in one home take turns choosing and making their split, and that turn ends before worktree setup begins.
+Two spawns that start before any visual worker is recorded can therefore each open a tab, and later workers join the first live one.
 Each pane remains the task's exact recorded endpoint, so sending, reading, liveness, and cleanup retain their normal task identity.
+An in-place relaunch keeps the task's visual marker, and a rebind of a visual task rejoins the shared tab.
 The setting affects new endpoints only.
 Firstmate never rearranges an active task when the setting changes.
 

@@ -373,11 +373,11 @@ VISUAL_ROOT_LABEL="fm-visual-root"
 VISUAL_ROOT_IDS=$(fm_backend_herdr_visual_create_task \
   "$CONTAINER" "$VISUAL_ROOT_LABEL" /tmp "$VISUAL_STATE") \
   || fail "visual root task creation failed"
-read -r VISUAL_TAB_ID VISUAL_ROOT_PANE_ID <<EOF
+read -r VISUAL_TAB_ID VISUAL_ROOT_PANE_ID VISUAL_ROOT_MODE <<EOF
 $VISUAL_ROOT_IDS
 EOF
-[ -n "$VISUAL_TAB_ID" ] && [ -n "$VISUAL_ROOT_PANE_ID" ] \
-  || fail "visual root task did not return a tab and pane"
+[ -n "$VISUAL_TAB_ID" ] && [ -n "$VISUAL_ROOT_PANE_ID" ] && [ "$VISUAL_ROOT_MODE" = on ] \
+  || fail "visual root task did not return a tab and pane in the visual layout"
 cat > "$VISUAL_STATE/root.meta" <<EOF
 backend=herdr
 herdr_visual_mode=on
@@ -390,10 +390,10 @@ VISUAL_SIBLING_LABEL="fm-visual-sibling"
 VISUAL_SIBLING_IDS=$(fm_backend_herdr_visual_create_task \
   "$CONTAINER" "$VISUAL_SIBLING_LABEL" /tmp "$VISUAL_STATE") \
   || fail "visual sibling task creation failed"
-read -r VISUAL_SIBLING_TAB_ID VISUAL_SIBLING_PANE_ID <<EOF
+read -r VISUAL_SIBLING_TAB_ID VISUAL_SIBLING_PANE_ID VISUAL_SIBLING_MODE <<EOF
 $VISUAL_SIBLING_IDS
 EOF
-[ "$VISUAL_SIBLING_TAB_ID" = "$VISUAL_TAB_ID" ] \
+[ "$VISUAL_SIBLING_TAB_ID" = "$VISUAL_TAB_ID" ] && [ "$VISUAL_SIBLING_MODE" = on ] \
   || fail "visual sibling did not join the root task tab"
 VISUAL_PANES=$(herdr pane list --workspace "${CONTAINER#*:}" --session "$SESSION") \
   || fail "could not list the real visual panes"
@@ -410,7 +410,16 @@ printf '%s' "$VISUAL_PANES" | jq -e \
     | length == 2
   ' >/dev/null 2>&1 \
   || fail "visual task panes did not retain their exact recorded labels in one tab"
-herdr pane focus --pane "$VISUAL_ROOT_PANE_ID" --direction right --session "$SESSION" >/dev/null \
+# The split direction follows the lab's real pane geometry, so navigation
+# moves toward wherever the sibling actually landed.
+VISUAL_FOCUS_DIRECTION=$(herdr pane layout --pane "$VISUAL_ROOT_PANE_ID" --session "$SESSION" | jq -r \
+  --arg root "$VISUAL_ROOT_PANE_ID" --arg sibling "$VISUAL_SIBLING_PANE_ID" '
+    .result.layout.panes as $panes
+    | ($panes[] | select(.pane_id == $root) | .rect) as $r
+    | ($panes[] | select(.pane_id == $sibling) | .rect) as $s
+    | if $s.x > $r.x then "right" else "down" end
+  ') || fail "could not read the real visual pane layout"
+herdr pane focus --pane "$VISUAL_ROOT_PANE_ID" --direction "$VISUAL_FOCUS_DIRECTION" --session "$SESSION" >/dev/null \
   || fail "native visual pane navigation failed"
 herdr pane zoom "$VISUAL_SIBLING_PANE_ID" --on --session "$SESSION" >/dev/null \
   || fail "native visual pane zoom failed"

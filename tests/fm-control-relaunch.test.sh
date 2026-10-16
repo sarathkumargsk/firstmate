@@ -2276,6 +2276,25 @@ test_herdr_reclaim_adopts_a_pane_that_outlived_its_server() {
   pass "reclaim: a herdr pane that outlived its stopped server is adopted, never orphaned beside a new tab"
 }
 
+test_herdr_relaunch_in_place_keeps_the_visual_layout_marker() {
+  local dir out rc=0
+  herdr_case_or_skip visual-marker rl78 || {
+    echo "skip - herdr relaunch needs jq (the herdr adapter parses JSON with it)"
+    return 0
+  }
+  dir=$HERDR_CASE_DIR
+  printf 'herdr_visual_mode=on\n' >> "$dir/home/state/rl78.meta"
+
+  out=$(run_spawn "$dir" rl78 --relaunch --harness claude) || rc=$?
+  expect_code 0 "$rc" "an in-place relaunch of a visual task should adopt its pane"$'\n'"$out"
+  [ "$(meta_field "$dir" rl78 herdr_pane_id)" = '%7' ] \
+    || fail "the in-place relaunch did not keep the recorded pane, got $(meta_field "$dir" rl78 herdr_pane_id)"
+  [ "$(grep -c '^herdr_visual_mode=' "$dir/home/state/rl78.meta")" = 1 ] \
+    && [ "$(meta_field "$dir" rl78 herdr_visual_mode)" = on ] \
+    || fail "the in-place relaunch dropped or duplicated the visual layout marker"
+  pass "reclaim: an in-place herdr relaunch keeps the task in the shared visual layout"
+}
+
 test_herdr_exit_reports_already_stopped_when_the_pane_outlived_its_server() {
   local dir out rc=0
   herdr_case_or_skip gone-herdr-exit rl72 || {
@@ -2598,6 +2617,7 @@ test_tmux_refuses_when_the_server_is_gone
 test_reclaim_refuses_an_unreadable_endpoint
 test_herdr_relaunch_resumes_only_the_registered_pi_session
 test_herdr_reclaim_adopts_a_pane_that_outlived_its_server
+test_herdr_relaunch_in_place_keeps_the_visual_layout_marker
 test_herdr_exit_reports_already_stopped_when_the_pane_outlived_its_server
 test_herdr_rebind_stays_in_the_recorded_session
 test_herdr_reclaim_refuses_an_agent_that_came_back
