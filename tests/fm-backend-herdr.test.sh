@@ -1568,7 +1568,7 @@ test_visual_create_uses_a_normal_first_task_then_splits_a_recorded_visual_pane()
   printf '{"result":{"panes":[]}}\n' > "$resp/1.out"
   printf '{"result":{"tabs":[]}}\n' > "$resp/2.out"
   printf '{"result":{"tab":{"tab_id":"w1:t1"},"root_pane":{"pane_id":"w1:p1"}}}\n' > "$resp/3.out"
-  printf '{"result":{"pane":{"pane_id":"w1:p1","tab_id":"w1:t1"}}}\n' > "$resp/5.out"
+  printf '{"result":{"pane":{"pane_id":"w1:p1","tab_id":"w1:t1"}}}\n' > "$resp/6.out"
   fb=$(make_herdr_fakebin "$dir")
   first=$(PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
     bash -c '. "$0/bin/fm-backend.sh"; . "$0/bin/backends/herdr.sh"; fm_backend_herdr_visual_create_task fmtest:w1 fm-first /proj "$1"' "$ROOT" "$state") \
@@ -1576,6 +1576,7 @@ test_visual_create_uses_a_normal_first_task_then_splits_a_recorded_visual_pane()
   [ "$first" = "w1:t1 w1:p1 on" ] || fail "first visual task returned '$first', expected the root tab and pane in the visual layout"
   assert_contains "$(cat "$log")" $'\x1f''tab'$'\x1f''create' "first visual task did not use ordinary safe tab creation"
   assert_contains "$(cat "$log")" $'\x1f''pane'$'\x1f''rename'$'\x1f''w1:p1'$'\x1f''fm-first' "first visual task did not label its root pane"
+  assert_contains "$(cat "$log")" $'\x1f''tab'$'\x1f''rename'$'\x1f''w1:t1'$'\x1f''workers' "the shared visual tab kept its first task's label"
   [ ! -e "$state/.herdr-visual-layout.lock" ] || fail "visual task creation left its layout lock held"
 
   cat > "$state/first.meta" <<'EOF'
@@ -1660,7 +1661,24 @@ test_visual_layout_changes_keep_the_selected_worker_zoomed() {
       fm_backend_kill herdr fmtest:w1:p3' "$ROOT" \
     || fail "a teardown close in an unzoomed tab should succeed"
   assert_not_contains "$(cat "$log")" $'\x1f''pane'$'\x1f''zoom' "a teardown close must not zoom a tab the user had not zoomed"
-  pass "fm_backend_herdr visual layout: splits, abandoned panes, and teardown closes keep the selected worker zoomed"
+
+  rm -f "${resp:?}"/* "$resp/.count"; : > "$log"
+  printf '{"result":{"panes":[{"pane_id":"w1:p1","tab_id":"w1:t1","label":"fm-first"},{"pane_id":"w1:p5","tab_id":"w1:t1","label":"fm-third"}]}}\n' > "$resp/1.out"
+  printf '{"error":{"code":"pane_not_found","message":"pane w1:p5 not found"}}\n' > "$resp/2.out"
+  printf '{"result":{"layout":{"workspace_id":"w1","tab_id":"w1:t1","zoomed":true,"focused_pane_id":"w1:p1","panes":[{"pane_id":"w1:p1","rect":{"width":100,"height":25}},{"pane_id":"w1:p2","rect":{"width":100,"height":25}}]}}}\n' > "$resp/3.out"
+  printf '{"result":{"tabs":[{"tab_id":"w1:t1","label":"workers","workspace_id":"w1"}]}}\n' > "$resp/4.out"
+  printf '{"result":{"tab":{"tab_id":"w1:t2"},"root_pane":{"pane_id":"w1:p6"}}}\n' > "$resp/5.out"
+  printf '{"result":{"pane":{"pane_id":"w1:p6","tab_id":"w1:t2"}}}\n' > "$resp/7.out"
+  cp "$resp/3.out" "$resp/8.out"
+  out=$(PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/fm-backend.sh"; . "$0/bin/backends/herdr.sh"; fm_backend_herdr_visual_create_task fmtest:w1 fm-third /proj "$1"' "$ROOT" "$state" 2>/dev/null) \
+    || fail "a full visual tab with a leftover husk should still fall back to an ordinary tab"
+  [ "$out" = "w1:t2 w1:p6 off" ] || fail "fallback with a leftover husk returned '$out'"
+  close_line=$(grep -n $'\x1f''pane'$'\x1f''close'$'\x1f''w1:p5' "$log" | head -1 | cut -d: -f1)
+  zoom_line=$(grep -n $'\x1f''pane'$'\x1f''zoom'$'\x1f''w1:p1'$'\x1f''--on' "$log" | head -1 | cut -d: -f1)
+  [ -n "$close_line" ] && [ -n "$zoom_line" ] && [ "$close_line" -lt "$zoom_line" ] \
+    || fail "closing a leftover husk on the fallback path did not zoom the selected worker again"
+  pass "fm_backend_herdr visual layout: splits, abandoned panes, husk cleanup, and teardown closes keep the selected worker zoomed"
 }
 
 test_visual_split_target_chooses_the_widest_owned_pane_and_alternates_direction() {
@@ -1716,6 +1734,7 @@ test_visual_create_falls_back_to_an_ordinary_tab_when_no_pane_has_room() {
   [ "$out" = "w1:t2 w1:p3 off" ] || fail "fallback should report an ordinary tab outside the visual layout, got '$out'"
   assert_contains "$(cat "$dir/err")" "no herdr visual pane has room" "fallback to an ordinary tab should warn"
   assert_not_contains "$(cat "$log")" $'\x1f''pane'$'\x1f''split' "a full visual tab must not be split below the minimum geometry"
+  assert_not_contains "$(cat "$log")" $'\x1f''tab'$'\x1f''rename' "an ordinary fallback tab must keep its task label"
   pass "fm_backend_herdr_visual_create_task: warns and uses an ordinary task tab when no visual pane has room"
 }
 
@@ -1725,7 +1744,7 @@ test_visual_create_removes_an_unpublished_pane_when_response_verification_fails(
   printf '{"result":{"panes":[]}}\n' > "$resp/1.out"
   printf '{"result":{"tabs":[]}}\n' > "$resp/2.out"
   printf '{"result":{"tab":{"tab_id":"w1:t1"},"root_pane":{"pane_id":"w1:p1"}}}\n' > "$resp/3.out"
-  printf '{"result":{"pane":{"pane_id":"w1:wrong","tab_id":"w1:t1"}}}\n' > "$resp/5.out"
+  printf '{"result":{"pane":{"pane_id":"w1:wrong","tab_id":"w1:t1"}}}\n' > "$resp/6.out"
   fb=$(make_herdr_fakebin "$dir")
   if PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
     bash -c '. "$0/bin/fm-backend.sh"; . "$0/bin/backends/herdr.sh"; fm_backend_herdr_visual_create_task fmtest:w1 fm-first /proj "$1"' "$ROOT" "$state" >/dev/null 2>"$dir/err"; then

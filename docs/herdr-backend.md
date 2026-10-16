@@ -496,7 +496,8 @@ Any of these preserves the candidate and lets session startup continue with at m
 Its default is off, so absent, empty, or `off` preserves the existing task-tab layout.
 The file is local and gitignored, and a secondmate home does not inherit it from the primary.
 Write `on` to place newly launched crewmates and scouts as labeled sibling panes in one existing task tab in the home workspace.
-The first visual worker creates that tab, and later workers split a currently recorded visual worker pane rather than using a label lookup.
+The first visual worker creates that tab and labels it `workers` rather than after any task, so the tab keeps no task's identity after its first worker leaves.
+Later workers split a currently recorded visual worker pane rather than using a label lookup.
 Each new worker splits the widest recorded visual pane, to the right when that pane is at least twice as wide as it is tall and downward otherwise, so the workers fill a grid.
 A split must leave both halves at least 60 columns wide and 15 rows tall.
 When no recorded visual pane has that room, the worker warns and opens an ordinary task tab outside the visual layout.
@@ -510,7 +511,7 @@ Firstmate never rearranges an active task when the setting changes.
 
 Visual mode uses Herdr's native controls instead of a Firstmate dashboard.
 With Herdr's default configuration, prefix-h/j/k/l changes the selected pane, prefix-Tab cycles panes, and prefix-z zooms or restores the selected pane.
-Herdr drops a tab's zoom whenever a pane in it is split or closed, so Firstmate zooms the selected worker again after it adds a visual worker or tears one down.
+Herdr drops a tab's zoom whenever a pane in it is split or closed, so Firstmate zooms the selected worker again after it adds a visual worker, closes a leftover pane from a failed spawn, or tears a worker down.
 The sidebar and agent picker remain available for direct selection.
 User Herdr keybindings remain authoritative, and Firstmate does not edit `~/.config/herdr/config.toml`.
 

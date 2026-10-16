@@ -156,6 +156,9 @@ FM_BACKEND_HERDR_PRESENTATION_CONFIG="herdr-presentation-spaces"
 # presentation projection above. It groups newly launched workers as panes in
 # one existing home tab and leaves the default tab-per-task topology unchanged.
 FM_BACKEND_HERDR_VISUAL_CONFIG="herdr-visual-mode"
+# The shared visual tab's label. It never names a task, so a task-label lookup
+# cannot mistake the shared tab for the tab of whichever worker opened it.
+FM_BACKEND_HERDR_VISUAL_TAB_LABEL="workers"
 # A visual split must leave both halves at least this many columns and rows.
 FM_BACKEND_HERDR_VISUAL_MIN_COLS=60
 FM_BACKEND_HERDR_VISUAL_MIN_ROWS=15
@@ -2686,7 +2689,8 @@ fm_backend_herdr_visual_abandon_pane() {  # <session> <pane> <zoomed-pane> <reas
 
 # fm_backend_herdr_visual_create_task: create a task in the home-local shared
 # visual tab. While no recorded visual worker is live, the task takes the
-# ordinary tab path and becomes the shared tab's root. Later tasks split the
+# ordinary tab path and becomes the shared tab's root, and that tab is then
+# relabeled FM_BACKEND_HERDR_VISUAL_TAB_LABEL. Later tasks split the
 # pane fm_backend_herdr_visual_split_target chooses; when no recorded pane has
 # room, the task warns and takes an ordinary tab outside the visual layout.
 # A home-local lock covers only target discovery, the split, and its
@@ -2717,7 +2721,7 @@ fm_backend_herdr_visual_create_task() {  # <container> <label> <cwd> <state-dir>
 # a duplicate task tab.
 fm_backend_herdr_visual_create_task_locked() {  # <container> <label> <cwd> <state-dir> <seeded-default-tab-id>
   local container=$1 label=$2 cwd=$3 state=$4 seeded_tab_id=${5:-}
-  local session wsid list dup dup_list dup_panes="" target status tab_id split_pane direction zoomed="" out pane_id actual_tab actual_pane mode=on
+  local session wsid list dup dup_list dup_panes="" dup_zoomed target status tab_id split_pane direction zoomed="" out pane_id actual_tab actual_pane mode=on
   session=${container%%:*}
   wsid=${container#*:}
   list=$(fm_backend_herdr_cli "$session" pane list --workspace "$wsid" 2>/dev/null) || {
@@ -2764,6 +2768,11 @@ EOF
     read -r tab_id pane_id <<EOF
 $out
 EOF
+    if [ "$mode" = on ] && ! fm_backend_herdr_cli "$session" tab rename "$tab_id" "$FM_BACKEND_HERDR_VISUAL_TAB_LABEL" >/dev/null 2>&1; then
+      fm_backend_herdr_visual_abandon_pane "$session" "$pane_id" "" \
+        "herdr could not label the shared visual tab $tab_id (session $session)"
+      return 1
+    fi
   fi
   if ! fm_backend_herdr_cli "$session" pane rename "$pane_id" "$label" >/dev/null 2>&1; then
     fm_backend_herdr_visual_abandon_pane "$session" "$pane_id" "$zoomed" \
@@ -2784,7 +2793,9 @@ EOF
   fi
   while IFS= read -r dup; do
     [ -n "$dup" ] || continue
+    dup_zoomed=$(fm_backend_herdr_visual_zoom_snapshot "$session" "$dup")
     fm_backend_herdr_cli "$session" pane close "$dup" >/dev/null 2>&1 || true
+    fm_backend_herdr_visual_zoom_restore "$session" "$dup_zoomed"
   done <<EOF
 $dup_panes
 EOF

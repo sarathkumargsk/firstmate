@@ -378,6 +378,8 @@ $VISUAL_ROOT_IDS
 EOF
 [ -n "$VISUAL_TAB_ID" ] && [ -n "$VISUAL_ROOT_PANE_ID" ] && [ "$VISUAL_ROOT_MODE" = on ] \
   || fail "visual root task did not return a tab and pane in the visual layout"
+herdr tab get "$VISUAL_TAB_ID" --session "$SESSION" | jq -e '.result.tab.label == "workers"' >/dev/null 2>&1 \
+  || fail "the shared visual tab kept its first task's label"
 cat > "$VISUAL_STATE/root.meta" <<EOF
 backend=herdr
 herdr_visual_mode=on
