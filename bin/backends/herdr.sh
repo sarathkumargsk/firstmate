@@ -2660,15 +2660,31 @@ fm_backend_herdr_visual_zoom_snapshot() {  # <session> <pane>
     | jq -r '.result.layout | select(.zoomed == true) | .focused_pane_id // empty' 2>/dev/null
 }
 
-# Zooming a pane makes Herdr switch to that pane's tab, so the restore puts
-# the user's active workspace and tab back afterwards and skips the zoom when
-# that focus cannot be read first. Nothing is zoomed again when the zoomed
-# pane is the one that was just closed.
+# Zooming a pane makes Herdr switch to that pane's tab, which also changes the
+# active tab its workspace returns to. The restore therefore records the
+# user's active workspace and tab, plus the zoomed pane's workspace's active
+# tab when that is a different workspace, and puts both back after the zoom.
+# It skips the zoom when any of that cannot be read first. Nothing is zoomed
+# again when the zoomed pane is the one that was just closed.
 fm_backend_herdr_visual_zoom_restore() {  # <session> <zoomed-pane> [<closed-pane>]
-  local before
+  local before info zoom_ws zoom_tab home_tab=""
   [ -n "$2" ] && [ "$2" != "${3:-}" ] || return 0
   before=$(fm_backend_herdr_projection_focus_snapshot "$1") || return 0
+  info=$(fm_backend_herdr_cli "$1" pane get "$2" 2>/dev/null) || return 0
+  zoom_ws=$(printf '%s' "$info" | jq -r --arg pane "$2" '.result.pane | select(.pane_id == $pane) | .workspace_id // empty' 2>/dev/null)
+  zoom_tab=$(printf '%s' "$info" | jq -r --arg pane "$2" '.result.pane | select(.pane_id == $pane) | .tab_id // empty' 2>/dev/null)
+  [ -n "$zoom_ws" ] && [ -n "$zoom_tab" ] || return 0
+  if [ "$zoom_ws" != "${before%%$'\t'*}" ]; then
+    home_tab=$(fm_backend_herdr_cli "$1" workspace list 2>/dev/null | jq -r --arg ws "$zoom_ws" '
+      [.result.workspaces[]? | select(.workspace_id == $ws) | .active_tab_id]
+      | if length == 1 and (.[0] | type) == "string" then .[0] else empty end
+    ' 2>/dev/null)
+    [ -n "$home_tab" ] || return 0
+  fi
   fm_backend_herdr_cli "$1" pane zoom "$2" --on >/dev/null 2>&1 || true
+  if [ -n "$home_tab" ] && [ "$home_tab" != "$zoom_tab" ]; then
+    fm_backend_herdr_cli "$1" tab focus "$home_tab" >/dev/null 2>&1 || true
+  fi
   fm_backend_herdr_projection_focus_restore "$1" "$before" "visual zoom restore" || true
 }
 
