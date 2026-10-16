@@ -425,7 +425,7 @@ herdr pane zoom "$VISUAL_SIBLING_PANE_ID" --on --session "$SESSION" >/dev/null \
   || fail "native visual pane zoom failed"
 herdr pane zoom "$VISUAL_SIBLING_PANE_ID" --off --session "$SESSION" >/dev/null \
   || fail "native visual pane unzoom failed"
-fm_backend_herdr_kill "$SESSION:$VISUAL_SIBLING_PANE_ID"
+fm_backend_kill herdr "$SESSION:$VISUAL_SIBLING_PANE_ID"
 herdr pane get "$VISUAL_ROOT_PANE_ID" --session "$SESSION" >/dev/null 2>&1 \
   || fail "removing a visual sibling also removed the root pane"
 if herdr pane get "$VISUAL_SIBLING_PANE_ID" --session "$SESSION" >/dev/null 2>&1; then

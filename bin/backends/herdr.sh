@@ -2648,6 +2648,42 @@ EOF
   printf '%s %s' "$shared_tab" "$target"
 }
 
+# Herdr drops a tab's zoom whenever a pane in it is split or closed. Firstmate
+# snapshots the zoomed pane before such a change and zooms it again after, so
+# a worker the user selected stays zoomed while the layout changes around it.
+# The snapshot prints nothing when the tab holding <pane> is not zoomed.
+fm_backend_herdr_visual_zoom_snapshot() {  # <session> <pane>
+  fm_backend_herdr_cli "$1" pane layout --pane "$2" 2>/dev/null \
+    | jq -r '.result.layout | select(.zoomed == true) | .focused_pane_id // empty' 2>/dev/null
+}
+
+fm_backend_herdr_visual_zoom_restore() {  # <session> <zoomed-pane>
+  [ -n "$2" ] || return 0
+  fm_backend_herdr_cli "$1" pane zoom "$2" --on >/dev/null 2>&1 || true
+}
+
+# fm_backend_herdr_kill_keeping_zoom: the backend kill entry point. It runs
+# fm_backend_herdr_kill unchanged between a zoom snapshot and its restore, so
+# tearing down one worker in the shared visual tab leaves another selected
+# worker zoomed. A closed zoomed pane simply cannot be zoomed again.
+fm_backend_herdr_kill_keeping_zoom() {  # <target>
+  local session=${1%%:*} zoomed="" status=0
+  if fm_backend_herdr_parse_target "$1"; then
+    zoomed=$(fm_backend_herdr_visual_zoom_snapshot "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE")
+  fi
+  fm_backend_herdr_kill "$@" || status=$?
+  fm_backend_herdr_visual_zoom_restore "$session" "$zoomed"
+  return "$status"
+}
+
+# fm_backend_herdr_visual_abandon_pane: close an unpublished task pane after a
+# failed creation step, restore the shared tab's zoom, and report the reason.
+fm_backend_herdr_visual_abandon_pane() {  # <session> <pane> <zoomed-pane> <reason>
+  [ -z "$2" ] || fm_backend_herdr_cli "$1" pane close "$2" >/dev/null 2>&1 || true
+  fm_backend_herdr_visual_zoom_restore "$1" "$3"
+  echo "error: $4" >&2
+}
+
 # fm_backend_herdr_visual_create_task: create a task in the home-local shared
 # visual tab. While no recorded visual worker is live, the task takes the
 # ordinary tab path and becomes the shared tab's root. Later tasks split the
@@ -2681,7 +2717,7 @@ fm_backend_herdr_visual_create_task() {  # <container> <label> <cwd> <state-dir>
 # a duplicate task tab.
 fm_backend_herdr_visual_create_task_locked() {  # <container> <label> <cwd> <state-dir> <seeded-default-tab-id>
   local container=$1 label=$2 cwd=$3 state=$4 seeded_tab_id=${5:-}
-  local session wsid list dup dup_list dup_panes="" target status tab_id split_pane direction out pane_id actual_tab actual_pane mode=on
+  local session wsid list dup dup_list dup_panes="" target status tab_id split_pane direction zoomed="" out pane_id actual_tab actual_pane mode=on
   session=${container%%:*}
   wsid=${container#*:}
   list=$(fm_backend_herdr_cli "$session" pane list --workspace "$wsid" 2>/dev/null) || {
@@ -2706,6 +2742,7 @@ EOF
     read -r tab_id split_pane direction <<EOF
 $target
 EOF
+    zoomed=$(fm_backend_herdr_visual_zoom_snapshot "$session" "$split_pane")
     out=$(fm_backend_herdr_cli "$session" pane split "$split_pane" --direction "$direction" --cwd "$cwd" --no-focus 2>/dev/null) || {
       echo "error: herdr could not split visual pane $split_pane for '$label' (session $session)" >&2
       return 1
@@ -2713,8 +2750,8 @@ EOF
     pane_id=$(printf '%s' "$out" | jq -r '.result.pane.pane_id // empty' 2>/dev/null)
     actual_tab=$(printf '%s' "$out" | jq -r '.result.pane.tab_id // empty' 2>/dev/null)
     if [ -z "$pane_id" ] || [ "$actual_tab" != "$tab_id" ]; then
-      [ -z "$pane_id" ] || fm_backend_herdr_cli "$session" pane close "$pane_id" >/dev/null 2>&1 || true
-      echo "error: herdr split of visual pane $split_pane did not return a new pane in tab $tab_id" >&2
+      fm_backend_herdr_visual_abandon_pane "$session" "$pane_id" "$zoomed" \
+        "herdr split of visual pane $split_pane did not return a new pane in tab $tab_id"
       return 1
     fi
   else
@@ -2729,20 +2766,20 @@ $out
 EOF
   fi
   if ! fm_backend_herdr_cli "$session" pane rename "$pane_id" "$label" >/dev/null 2>&1; then
-    fm_backend_herdr_cli "$session" pane close "$pane_id" >/dev/null 2>&1 || true
-    echo "error: herdr could not label pane $pane_id as '$label' (session $session)" >&2
+    fm_backend_herdr_visual_abandon_pane "$session" "$pane_id" "$zoomed" \
+      "herdr could not label pane $pane_id as '$label' (session $session)"
     return 1
   fi
   if ! out=$(fm_backend_herdr_cli "$session" pane get "$pane_id" 2>/dev/null); then
-    fm_backend_herdr_cli "$session" pane close "$pane_id" >/dev/null 2>&1 || true
-    echo "error: herdr could not read back pane $pane_id for '$label' (session $session)" >&2
+    fm_backend_herdr_visual_abandon_pane "$session" "$pane_id" "$zoomed" \
+      "herdr could not read back pane $pane_id for '$label' (session $session)"
     return 1
   fi
   actual_pane=$(printf '%s' "$out" | jq -r '.result.pane.pane_id // empty' 2>/dev/null)
   actual_tab=$(printf '%s' "$out" | jq -r '.result.pane.tab_id // empty' 2>/dev/null)
   if [ "$actual_pane" != "$pane_id" ] || [ "$actual_tab" != "$tab_id" ]; then
-    fm_backend_herdr_cli "$session" pane close "$pane_id" >/dev/null 2>&1 || true
-    echo "error: herdr pane $pane_id for '$label' did not read back in tab $tab_id (session $session)" >&2
+    fm_backend_herdr_visual_abandon_pane "$session" "$pane_id" "$zoomed" \
+      "herdr pane $pane_id for '$label' did not read back in tab $tab_id (session $session)"
     return 1
   fi
   while IFS= read -r dup; do
@@ -2751,6 +2788,7 @@ EOF
   done <<EOF
 $dup_panes
 EOF
+  fm_backend_herdr_visual_zoom_restore "$session" "$zoomed"
   printf '%s %s %s' "$tab_id" "$pane_id" "$mode"
 }
 

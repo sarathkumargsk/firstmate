@@ -869,7 +869,7 @@ fm_backend_kill() {  # <backend> <target>
   fm_backend_source "$backend" || return 1
   case "$backend" in
     tmux) fm_backend_tmux_kill "$@" ;;
-    herdr) fm_backend_herdr_kill "$@" ;;
+    herdr) fm_backend_herdr_kill_keeping_zoom "$@" ;;
     zellij) fm_backend_zellij_kill "$@" ;;
     orca) fm_backend_orca_kill "$@" ;;
     cmux) fm_backend_cmux_kill "$@" ;;

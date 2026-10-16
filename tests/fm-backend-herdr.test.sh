@@ -1588,9 +1588,10 @@ herdr_pane_id=w1:p1
 EOF
   rm -f "${resp:?}"/* "$resp/.count"; : > "$log"
   printf '{"result":{"panes":[{"pane_id":"w1:p1","tab_id":"w1:t1","label":"fm-first"}]}}\n' > "$resp/1.out"
-  printf '{"result":{"layout":{"workspace_id":"w1","tab_id":"w1:t1","panes":[{"pane_id":"w1:p1","rect":{"x":0,"y":0,"width":221,"height":59}}]}}}\n' > "$resp/2.out"
-  printf '{"result":{"pane":{"pane_id":"w1:p2","tab_id":"w1:t1"}}}\n' > "$resp/3.out"
-  printf '{"result":{"pane":{"pane_id":"w1:p2","tab_id":"w1:t1"}}}\n' > "$resp/5.out"
+  printf '{"result":{"layout":{"workspace_id":"w1","tab_id":"w1:t1","zoomed":false,"focused_pane_id":"w1:p1","panes":[{"pane_id":"w1:p1","rect":{"x":0,"y":0,"width":221,"height":59}}]}}}\n' > "$resp/2.out"
+  cp "$resp/2.out" "$resp/3.out"
+  printf '{"result":{"pane":{"pane_id":"w1:p2","tab_id":"w1:t1"}}}\n' > "$resp/4.out"
+  printf '{"result":{"pane":{"pane_id":"w1:p2","tab_id":"w1:t1"}}}\n' > "$resp/6.out"
   second=$(PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
     bash -c '. "$0/bin/fm-backend.sh"; . "$0/bin/backends/herdr.sh"; fm_backend_herdr_visual_create_task fmtest:w1 fm-second /proj "$1"' "$ROOT" "$state") \
     || fail "second visual task should split the recorded visual pane"
@@ -1599,7 +1600,67 @@ EOF
     "second visual task did not make a non-focusing sibling pane"
   assert_contains "$(cat "$log")" $'\x1f''pane'$'\x1f''rename'$'\x1f''w1:p2'$'\x1f''fm-second' "second visual task did not label its pane"
   assert_not_contains "$(cat "$log")" $'\x1f''tab'$'\x1f''create' "second visual task must not create another tab"
+  assert_not_contains "$(cat "$log")" $'\x1f''pane'$'\x1f''zoom' "an unzoomed shared tab must not be zoomed"
   pass "fm_backend_herdr_visual_create_task: keeps workers in one task tab with labeled native split panes"
+}
+
+test_visual_layout_changes_keep_the_selected_worker_zoomed() {
+  local dir log resp fb state out split_line zoom_line close_line
+  dir="$TMP_ROOT/visual-zoom"; mkdir -p "$dir/responses" "$dir/state"; log="$dir/log"; resp="$dir/responses"; state="$dir/state"; : > "$log"
+  printf 'herdr_visual_mode=on\nherdr_session=fmtest\nherdr_workspace_id=w1\nherdr_tab_id=w1:t1\nherdr_pane_id=w1:p1\n' > "$state/a.meta"
+  printf 'herdr_visual_mode=on\nherdr_session=fmtest\nherdr_workspace_id=w1\nherdr_tab_id=w1:t1\nherdr_pane_id=w1:p2\n' > "$state/b.meta"
+  printf '{"result":{"panes":[]}}\n' > "$resp/1.out"
+  printf '{"result":{"layout":{"workspace_id":"w1","tab_id":"w1:t1","zoomed":true,"focused_pane_id":"w1:p2","panes":[{"pane_id":"w1:p1","rect":{"width":221,"height":59}},{"pane_id":"w1:p2","rect":{"width":100,"height":59}}]}}}\n' > "$resp/2.out"
+  cp "$resp/2.out" "$resp/3.out"
+  printf '{"result":{"pane":{"pane_id":"w1:p3","tab_id":"w1:t1"}}}\n' > "$resp/4.out"
+  printf '{"result":{"pane":{"pane_id":"w1:p3","tab_id":"w1:t1"}}}\n' > "$resp/6.out"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$(PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/fm-backend.sh"; . "$0/bin/backends/herdr.sh"; fm_backend_herdr_visual_create_task fmtest:w1 fm-third /proj "$1"' "$ROOT" "$state") \
+    || fail "a zoomed shared tab should still accept a visual worker"
+  [ "$out" = "w1:t1 w1:p3 on" ] || fail "visual creation in a zoomed tab returned '$out'"
+  split_line=$(grep -n $'\x1f''pane'$'\x1f''split'$'\x1f''w1:p1' "$log" | head -1 | cut -d: -f1)
+  zoom_line=$(grep -n $'\x1f''pane'$'\x1f''zoom'$'\x1f''w1:p2'$'\x1f''--on' "$log" | head -1 | cut -d: -f1)
+  [ -n "$split_line" ] && [ -n "$zoom_line" ] && [ "$split_line" -lt "$zoom_line" ] \
+    || fail "a visual split did not zoom the selected worker again after the split"
+
+  rm -f "${resp:?}"/* "$resp/.count"; : > "$log"
+  printf '{"result":{"panes":[]}}\n' > "$resp/1.out"
+  printf '{"result":{"layout":{"workspace_id":"w1","tab_id":"w1:t1","zoomed":true,"focused_pane_id":"w1:p2","panes":[{"pane_id":"w1:p1","rect":{"width":221,"height":59}},{"pane_id":"w1:p2","rect":{"width":100,"height":59}}]}}}\n' > "$resp/2.out"
+  cp "$resp/2.out" "$resp/3.out"
+  printf '{"result":{"pane":{"pane_id":"w1:p3","tab_id":"w1:t1"}}}\n' > "$resp/4.out"
+  printf '1\n' > "$resp/5.exit"
+  if PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/fm-backend.sh"; . "$0/bin/backends/herdr.sh"; fm_backend_herdr_visual_create_task fmtest:w1 fm-third /proj "$1"' "$ROOT" "$state" >/dev/null 2>"$dir/err"; then
+    fail "a failed pane label must fail visual creation"
+  fi
+  close_line=$(grep -n $'\x1f''pane'$'\x1f''close'$'\x1f''w1:p3' "$log" | head -1 | cut -d: -f1)
+  zoom_line=$(grep -n $'\x1f''pane'$'\x1f''zoom'$'\x1f''w1:p2'$'\x1f''--on' "$log" | head -1 | cut -d: -f1)
+  [ -n "$close_line" ] && [ -n "$zoom_line" ] && [ "$close_line" -lt "$zoom_line" ] \
+    || fail "abandoning a failed visual pane did not zoom the selected worker again after the close"
+  assert_contains "$(cat "$dir/err")" "could not label pane w1:p3" "a failed visual label must say why"
+
+  rm -f "${resp:?}"/* "$resp/.count"; : > "$log"
+  printf '{"result":{"layout":{"workspace_id":"w1","tab_id":"w1:t1","zoomed":true,"focused_pane_id":"w1:p2","panes":[]}}}\n' > "$resp/1.out"
+  PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/fm-backend.sh"; fm_backend_source herdr
+      fm_backend_herdr_kill() { fm_backend_herdr_cli "${1%%:*}" pane close "${1#*:}" >/dev/null; }
+      fm_backend_kill herdr fmtest:w1:p3' "$ROOT" \
+    || fail "a teardown close in the shared visual tab should succeed"
+  close_line=$(grep -n $'\x1f''pane'$'\x1f''close'$'\x1f''w1:p3' "$log" | head -1 | cut -d: -f1)
+  zoom_line=$(grep -n $'\x1f''pane'$'\x1f''zoom'$'\x1f''w1:p2'$'\x1f''--on' "$log" | head -1 | cut -d: -f1)
+  [ -n "$close_line" ] && [ -n "$zoom_line" ] && [ "$close_line" -lt "$zoom_line" ] \
+    || fail "tearing down a visual worker did not zoom the selected worker again after the close"
+
+  rm -f "${resp:?}"/* "$resp/.count"; : > "$log"
+  printf '{"result":{"layout":{"workspace_id":"w1","tab_id":"w1:t1","zoomed":false,"focused_pane_id":"w1:p2","panes":[]}}}\n' > "$resp/1.out"
+  PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/fm-backend.sh"; fm_backend_source herdr
+      fm_backend_herdr_kill() { fm_backend_herdr_cli "${1%%:*}" pane close "${1#*:}" >/dev/null; }
+      fm_backend_kill herdr fmtest:w1:p3' "$ROOT" \
+    || fail "a teardown close in an unzoomed tab should succeed"
+  assert_not_contains "$(cat "$log")" $'\x1f''pane'$'\x1f''zoom' "a teardown close must not zoom a tab the user had not zoomed"
+  pass "fm_backend_herdr visual layout: splits, abandoned panes, and teardown closes keep the selected worker zoomed"
 }
 
 test_visual_split_target_chooses_the_widest_owned_pane_and_alternates_direction() {
@@ -1678,7 +1739,8 @@ test_visual_create_removes_an_unpublished_pane_when_response_verification_fails(
   rm -f "${resp:?}"/* "$resp/.count"; : > "$log"
   printf '{"result":{"panes":[]}}\n' > "$resp/1.out"
   printf '{"result":{"layout":{"workspace_id":"w1","tab_id":"w1:t1","panes":[{"pane_id":"w1:p1","rect":{"width":221,"height":59}}]}}}\n' > "$resp/2.out"
-  printf '{"result":{"pane":{"pane_id":"w1:p2","tab_id":"w1:other"}}}\n' > "$resp/3.out"
+  cp "$resp/2.out" "$resp/3.out"
+  printf '{"result":{"pane":{"pane_id":"w1:p2","tab_id":"w1:other"}}}\n' > "$resp/4.out"
   if PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
     bash -c '. "$0/bin/fm-backend.sh"; . "$0/bin/backends/herdr.sh"; fm_backend_herdr_visual_create_task fmtest:w1 fm-second /proj "$1"' "$ROOT" "$state" >/dev/null 2>"$dir/err"; then
     fail "visual creation must reject a split response outside the shared tab"
@@ -1696,8 +1758,9 @@ test_visual_create_replaces_a_husk_label_and_refuses_a_live_one() {
   printf '{"result":{"panes":[{"pane_id":"w1:p1","tab_id":"w1:t1","label":"fm-first"},{"pane_id":"w1:p5","tab_id":"w1:t1","label":"fm-second"}]}}\n' > "$resp/1.out"
   printf '{"error":{"code":"pane_not_found","message":"pane w1:p5 not found"}}\n' > "$resp/2.out"
   printf '{"result":{"layout":{"workspace_id":"w1","tab_id":"w1:t1","panes":[{"pane_id":"w1:p1","rect":{"width":221,"height":59}},{"pane_id":"w1:p5","rect":{"width":221,"height":59}}]}}}\n' > "$resp/3.out"
-  printf '{"result":{"pane":{"pane_id":"w1:p6","tab_id":"w1:t1"}}}\n' > "$resp/4.out"
-  printf '{"result":{"pane":{"pane_id":"w1:p6","tab_id":"w1:t1"}}}\n' > "$resp/6.out"
+  cp "$resp/3.out" "$resp/4.out"
+  printf '{"result":{"pane":{"pane_id":"w1:p6","tab_id":"w1:t1"}}}\n' > "$resp/5.out"
+  printf '{"result":{"pane":{"pane_id":"w1:p6","tab_id":"w1:t1"}}}\n' > "$resp/7.out"
   fb=$(make_herdr_fakebin "$dir")
   out=$(PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
     bash -c '. "$0/bin/fm-backend.sh"; . "$0/bin/backends/herdr.sh"; fm_backend_herdr_visual_create_task fmtest:w1 fm-second /proj "$1"' "$ROOT" "$state") \
@@ -6127,6 +6190,7 @@ test_create_task_creates_and_parses_ids
 test_create_task_creates_with_no_focus_flag
 test_visual_preference_is_explicit_and_default_off
 test_visual_create_uses_a_normal_first_task_then_splits_a_recorded_visual_pane
+test_visual_layout_changes_keep_the_selected_worker_zoomed
 test_visual_split_target_chooses_the_widest_owned_pane_and_alternates_direction
 test_visual_create_falls_back_to_an_ordinary_tab_when_no_pane_has_room
 test_visual_create_removes_an_unpublished_pane_when_response_verification_fails
