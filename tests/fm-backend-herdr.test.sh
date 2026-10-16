@@ -1566,6 +1566,8 @@ test_visual_preference_is_explicit_and_default_off() {
   pass "fm_backend_herdr_visual_preference: is default-off, explicit, and tolerant of an invalid local preference"
 }
 
+export FM_TEST_SESSION_LOCK="$TMP_ROOT/visual-session.lock"
+
 test_visual_create_uses_a_normal_first_task_then_splits_a_recorded_visual_pane() {
   local dir log resp fb state first second
   dir="$TMP_ROOT/visual-create"; mkdir -p "$dir/responses" "$dir/state"; log="$dir/log"; resp="$dir/responses"; state="$dir/state"; : > "$log"
@@ -1575,13 +1577,14 @@ test_visual_create_uses_a_normal_first_task_then_splits_a_recorded_visual_pane()
   printf '{"result":{"pane":{"pane_id":"w1:p1","tab_id":"w1:t1"}}}\n' > "$resp/6.out"
   fb=$(make_herdr_fakebin "$dir")
   first=$(PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
-    bash -c '. "$0/bin/fm-backend.sh"; . "$0/bin/backends/herdr.sh"; fm_backend_herdr_visual_create_task fmtest:w1 fm-first /proj "$1"' "$ROOT" "$state") \
+    bash -c '. "$0/bin/fm-backend.sh"; . "$0/bin/backends/herdr.sh"; fm_backend_herdr_presentation_session_lock_path() { printf "%s" "$FM_TEST_SESSION_LOCK"; }; fm_backend_herdr_visual_create_task fmtest:w1 fm-first /proj "$1"' "$ROOT" "$state") \
     || fail "first visual task should create the normal root tab"
   [ "$first" = "w1:t1 w1:p1 on" ] || fail "first visual task returned '$first', expected the root tab and pane in the visual layout"
   assert_contains "$(cat "$log")" $'\x1f''tab'$'\x1f''create' "first visual task did not use ordinary safe tab creation"
   assert_contains "$(cat "$log")" $'\x1f''pane'$'\x1f''rename'$'\x1f''w1:p1'$'\x1f''fm-first' "first visual task did not label its root pane"
   assert_contains "$(cat "$log")" $'\x1f''tab'$'\x1f''rename'$'\x1f''w1:t1'$'\x1f''workers' "the shared visual tab kept its first task's label"
   [ ! -e "$state/.herdr-visual-layout.lock" ] || fail "visual task creation left its layout lock held"
+  [ ! -e "$FM_TEST_SESSION_LOCK" ] || fail "visual task creation left the session presentation lock held"
 
   cat > "$state/first.meta" <<'EOF'
 backend=herdr
@@ -1597,7 +1600,7 @@ EOF
   printf '{"result":{"pane":{"pane_id":"w1:p2","tab_id":"w1:t1"}}}\n' > "$resp/2.out"
   printf '{"result":{"pane":{"pane_id":"w1:p2","tab_id":"w1:t1"}}}\n' > "$resp/4.out"
   second=$(PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" FM_HERDR_LAYOUT="$dir/layout.json" \
-    bash -c '. "$0/bin/fm-backend.sh"; . "$0/bin/backends/herdr.sh"; fm_backend_herdr_visual_create_task fmtest:w1 fm-second /proj "$1"' "$ROOT" "$state") \
+    bash -c '. "$0/bin/fm-backend.sh"; . "$0/bin/backends/herdr.sh"; fm_backend_herdr_presentation_session_lock_path() { printf "%s" "$FM_TEST_SESSION_LOCK"; }; fm_backend_herdr_visual_create_task fmtest:w1 fm-second /proj "$1"' "$ROOT" "$state") \
     || fail "second visual task should split the recorded visual pane"
   [ "$second" = "w1:t1 w1:p2 on" ] || fail "second visual task returned '$second', expected the shared tab and new pane"
   assert_contains "$(cat "$log")" $'\x1f''pane'$'\x1f''split'$'\x1f''w1:p1'$'\x1f''--direction'$'\x1f''right'$'\x1f''--cwd'$'\x1f''/proj'$'\x1f''--no-focus' \
@@ -1651,7 +1654,7 @@ test_visual_layout_changes_keep_the_selected_worker_zoomed() {
   printf '{"result":{"pane":{"pane_id":"w1:p3","tab_id":"w1:t1"}}}\n' > "$resp/4.out"
   write_visual_focus_responses "$resp" 5 1
   out=$(PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" FM_HERDR_LAYOUT="$dir/layout.json" \
-    bash -c '. "$0/bin/fm-backend.sh"; . "$0/bin/backends/herdr.sh"; fm_backend_herdr_visual_create_task fmtest:w1 fm-third /proj "$1"' "$ROOT" "$state" 2>"$dir/err") \
+    bash -c '. "$0/bin/fm-backend.sh"; . "$0/bin/backends/herdr.sh"; fm_backend_herdr_presentation_session_lock_path() { printf "%s" "$FM_TEST_SESSION_LOCK"; }; fm_backend_herdr_visual_create_task fmtest:w1 fm-third /proj "$1"' "$ROOT" "$state" 2>"$dir/err") \
     || fail "a zoomed shared tab should still accept a visual worker: $(cat "$dir/err")"
   [ "$out" = "w1:t1 w1:p3 on" ] || fail "visual creation in a zoomed tab returned '$out'"
   split_line=$(log_line "$log" pane split w1:p1)
@@ -1667,9 +1670,26 @@ test_visual_layout_changes_keep_the_selected_worker_zoomed() {
   printf '{"result":{"pane":{"pane_id":"w1:p3","tab_id":"w1:t1"}}}\n' > "$resp/2.out"
   printf '{"result":{"pane":{"pane_id":"w1:p3","tab_id":"w1:t1"}}}\n' > "$resp/4.out"
   PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" FM_HERDR_LAYOUT="$dir/layout.json" \
-    bash -c '. "$0/bin/fm-backend.sh"; . "$0/bin/backends/herdr.sh"; fm_backend_herdr_visual_create_task fmtest:w1 fm-third /proj "$1"' "$ROOT" "$state" >/dev/null 2>&1 \
+    bash -c '. "$0/bin/fm-backend.sh"; . "$0/bin/backends/herdr.sh"; fm_backend_herdr_presentation_session_lock_path() { printf "%s" "$FM_TEST_SESSION_LOCK"; }; fm_backend_herdr_visual_create_task fmtest:w1 fm-third /proj "$1"' "$ROOT" "$state" >/dev/null 2>&1 \
     || fail "an unreadable view must not fail visual creation"
   assert_not_contains "$(cat "$log")" $'\x1f''pane'$'\x1f''zoom' "a zoom restore must be skipped when the user's view cannot be read first"
+
+  rm -f "${resp:?}"/* "$resp/.count"; : > "$log"
+  printf '{"result":{"panes":[]}}\n' > "$resp/1.out"
+  printf '{"result":{"pane":{"pane_id":"w1:p3","tab_id":"w1:t1"}}}\n' > "$resp/2.out"
+  printf '{"result":{"pane":{"pane_id":"w1:p3","tab_id":"w1:t1"}}}\n' > "$resp/4.out"
+  write_visual_focus_responses "$resp" 5 1
+  out=$(PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" FM_HERDR_LAYOUT="$dir/layout.json" \
+    bash -c '. "$0/bin/fm-backend.sh"; . "$0/bin/backends/herdr.sh"; . "$0/bin/fm-wake-lib.sh"
+      fm_backend_herdr_presentation_session_lock_path() { printf "%s" "$FM_TEST_SESSION_LOCK"; }
+      eval "$(declare -f fm_lock_try_acquire | sed "1s/fm_lock_try_acquire/fm_lock_try_acquire_real/")"
+      fm_lock_try_acquire() { [ "$1" != "$FM_TEST_SESSION_LOCK" ] || return 1; fm_lock_try_acquire_real "$@"; }
+      sleep() { :; }
+      fm_backend_herdr_visual_create_task fmtest:w1 fm-third /proj "$1"' "$ROOT" "$state" 2>"$dir/err") \
+    || fail "a contended session presentation lock must not fail visual creation: $(cat "$dir/err")"
+  [ "$out" = "w1:t1 w1:p3 on" ] || fail "visual creation under session lock contention returned '$out'"
+  assert_not_contains "$(cat "$log")" $'\x1f''pane'$'\x1f''zoom' "a zoom restore must not run without the session presentation lock"
+  assert_contains "$(cat "$dir/err")" "session presentation lock unavailable" "skipping the zoom restore under lock contention should warn"
 
   rm -f "${resp:?}"/* "$resp/.count"; : > "$log"
   printf '{"result":{"panes":[]}}\n' > "$resp/1.out"
@@ -1677,7 +1697,7 @@ test_visual_layout_changes_keep_the_selected_worker_zoomed() {
   printf '1\n' > "$resp/3.exit"
   write_visual_focus_responses "$resp" 5 0
   if PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" FM_HERDR_LAYOUT="$dir/layout.json" \
-    bash -c '. "$0/bin/fm-backend.sh"; . "$0/bin/backends/herdr.sh"; fm_backend_herdr_visual_create_task fmtest:w1 fm-third /proj "$1"' "$ROOT" "$state" >/dev/null 2>"$dir/err"; then
+    bash -c '. "$0/bin/fm-backend.sh"; . "$0/bin/backends/herdr.sh"; fm_backend_herdr_presentation_session_lock_path() { printf "%s" "$FM_TEST_SESSION_LOCK"; }; fm_backend_herdr_visual_create_task fmtest:w1 fm-third /proj "$1"' "$ROOT" "$state" >/dev/null 2>"$dir/err"; then
     fail "a failed pane label must fail visual creation"
   fi
   close_line=$(log_line "$log" pane close w1:p3)
@@ -1695,7 +1715,7 @@ test_visual_layout_changes_keep_the_selected_worker_zoomed() {
   printf '{"result":{"pane":{"pane_id":"w1:p6","tab_id":"w1:t2"}}}\n' > "$resp/6.out"
   write_visual_focus_responses "$resp" 8 0
   out=$(PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" FM_HERDR_LAYOUT="$dir/full.json" \
-    bash -c '. "$0/bin/fm-backend.sh"; . "$0/bin/backends/herdr.sh"; fm_backend_herdr_visual_create_task fmtest:w1 fm-third /proj "$1"' "$ROOT" "$state" 2>/dev/null) \
+    bash -c '. "$0/bin/fm-backend.sh"; . "$0/bin/backends/herdr.sh"; fm_backend_herdr_presentation_session_lock_path() { printf "%s" "$FM_TEST_SESSION_LOCK"; }; fm_backend_herdr_visual_create_task fmtest:w1 fm-third /proj "$1"' "$ROOT" "$state" 2>/dev/null) \
     || fail "a full visual tab with a leftover husk should still fall back to an ordinary tab"
   [ "$out" = "w1:t2 w1:p6 off" ] || fail "fallback with a leftover husk returned '$out'"
   close_line=$(log_line "$log" pane close w1:p5)
@@ -1777,7 +1797,7 @@ test_visual_create_falls_back_to_an_ordinary_tab_when_no_pane_has_room() {
   printf '{"result":{"pane":{"pane_id":"w1:p3","tab_id":"w1:t2"}}}\n' > "$resp/5.out"
   fb=$(make_herdr_fakebin "$dir")
   out=$(PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" FM_HERDR_LAYOUT="$dir/layout.json" \
-    bash -c '. "$0/bin/fm-backend.sh"; . "$0/bin/backends/herdr.sh"; fm_backend_herdr_visual_create_task fmtest:w1 fm-third /proj "$1"' "$ROOT" "$state" 2>"$dir/err") \
+    bash -c '. "$0/bin/fm-backend.sh"; . "$0/bin/backends/herdr.sh"; fm_backend_herdr_presentation_session_lock_path() { printf "%s" "$FM_TEST_SESSION_LOCK"; }; fm_backend_herdr_visual_create_task fmtest:w1 fm-third /proj "$1"' "$ROOT" "$state" 2>"$dir/err") \
     || fail "a full visual tab should fall back to an ordinary task tab: $(cat "$dir/err")"
   [ "$out" = "w1:t2 w1:p3 off" ] || fail "fallback should report an ordinary tab outside the visual layout, got '$out'"
   assert_contains "$(cat "$dir/err")" "no herdr visual pane has room" "fallback to an ordinary tab should warn"
@@ -1795,7 +1815,7 @@ test_visual_create_removes_an_unpublished_pane_when_response_verification_fails(
   printf '{"result":{"pane":{"pane_id":"w1:wrong","tab_id":"w1:t1"}}}\n' > "$resp/6.out"
   fb=$(make_herdr_fakebin "$dir")
   if PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
-    bash -c '. "$0/bin/fm-backend.sh"; . "$0/bin/backends/herdr.sh"; fm_backend_herdr_visual_create_task fmtest:w1 fm-first /proj "$1"' "$ROOT" "$state" >/dev/null 2>"$dir/err"; then
+    bash -c '. "$0/bin/fm-backend.sh"; . "$0/bin/backends/herdr.sh"; fm_backend_herdr_presentation_session_lock_path() { printf "%s" "$FM_TEST_SESSION_LOCK"; }; fm_backend_herdr_visual_create_task fmtest:w1 fm-first /proj "$1"' "$ROOT" "$state" >/dev/null 2>"$dir/err"; then
     fail "visual creation must reject a pane response that does not name the pane it created"
   fi
   assert_contains "$(cat "$log")" $'\x1f''pane'$'\x1f''close'$'\x1f''w1:p1' \
@@ -1808,7 +1828,7 @@ test_visual_create_removes_an_unpublished_pane_when_response_verification_fails(
   printf '{"result":{"panes":[]}}\n' > "$resp/1.out"
   printf '{"result":{"pane":{"pane_id":"w1:p2","tab_id":"w1:other"}}}\n' > "$resp/2.out"
   if PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" FM_HERDR_LAYOUT="$dir/layout.json" \
-    bash -c '. "$0/bin/fm-backend.sh"; . "$0/bin/backends/herdr.sh"; fm_backend_herdr_visual_create_task fmtest:w1 fm-second /proj "$1"' "$ROOT" "$state" >/dev/null 2>"$dir/err"; then
+    bash -c '. "$0/bin/fm-backend.sh"; . "$0/bin/backends/herdr.sh"; fm_backend_herdr_presentation_session_lock_path() { printf "%s" "$FM_TEST_SESSION_LOCK"; }; fm_backend_herdr_visual_create_task fmtest:w1 fm-second /proj "$1"' "$ROOT" "$state" >/dev/null 2>"$dir/err"; then
     fail "visual creation must reject a split response outside the shared tab"
   fi
   assert_contains "$(cat "$log")" $'\x1f''pane'$'\x1f''close'$'\x1f''w1:p2' \
@@ -1828,7 +1848,7 @@ test_visual_create_replaces_a_husk_label_and_refuses_a_live_one() {
   printf '{"result":{"pane":{"pane_id":"w1:p6","tab_id":"w1:t1"}}}\n' > "$resp/5.out"
   fb=$(make_herdr_fakebin "$dir")
   out=$(PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" FM_HERDR_LAYOUT="$dir/layout.json" \
-    bash -c '. "$0/bin/fm-backend.sh"; . "$0/bin/backends/herdr.sh"; fm_backend_herdr_visual_create_task fmtest:w1 fm-second /proj "$1"' "$ROOT" "$state") \
+    bash -c '. "$0/bin/fm-backend.sh"; . "$0/bin/backends/herdr.sh"; fm_backend_herdr_presentation_session_lock_path() { printf "%s" "$FM_TEST_SESSION_LOCK"; }; fm_backend_herdr_visual_create_task fmtest:w1 fm-second /proj "$1"' "$ROOT" "$state") \
     || fail "a husk pane under the task label should be replaced"
   [ "$out" = "w1:t1 w1:p6 on" ] || fail "husk replacement returned '$out', expected the new shared-tab pane"
   split_line=$(log_line "$log" pane split w1:p1)
@@ -1842,7 +1862,7 @@ test_visual_create_replaces_a_husk_label_and_refuses_a_live_one() {
   printf '{"result":{"pane":{"pane_id":"w1:p5"}}}\n' > "$resp/2.out"
   printf '{"error":{"code":"internal_error","message":"transient failure"}}\n' > "$resp/3.out"
   if out=$(PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" FM_HERDR_LAYOUT="$dir/layout.json" \
-    bash -c '. "$0/bin/fm-backend.sh"; . "$0/bin/backends/herdr.sh"; fm_backend_herdr_visual_create_task fmtest:w1 fm-second /proj "$1"' "$ROOT" "$state" 2>&1); then
+    bash -c '. "$0/bin/fm-backend.sh"; . "$0/bin/backends/herdr.sh"; fm_backend_herdr_presentation_session_lock_path() { printf "%s" "$FM_TEST_SESSION_LOCK"; }; fm_backend_herdr_visual_create_task fmtest:w1 fm-second /proj "$1"' "$ROOT" "$state" 2>&1); then
     fail "a pane under the task label that is not a confirmed husk must refuse"
   fi
   assert_contains "$out" "already exists" "a live duplicate pane label should be reported"

@@ -3867,7 +3867,8 @@ else
     HERDR_PRESENTATION_JOURNAL=$(fm_backend_herdr_projection_journal_path "$STATE" "$ID")
     HERDR_PROJECTED=0
     HERDR_VISUAL_LAYOUT=off
-    if [ "$KIND" != secondmate ] && fm_backend_herdr_visual_enabled "$CONFIG"; then
+    if [ "$KIND" != secondmate ] && [ ! -e "$HERDR_PRESENTATION_JOURNAL" ] && [ ! -L "$HERDR_PRESENTATION_JOURNAL" ] \
+      && fm_backend_herdr_visual_enabled "$CONFIG"; then
       HERDR_VISUAL_LAYOUT=on
     fi
     if [ "$KIND" != secondmate ] && [ "$HERDR_VISUAL_LAYOUT" != on ] && fm_backend_herdr_presentation_enabled "$CONFIG" "$STATE"; then

@@ -508,7 +508,7 @@ The setting is inherited into secondmate homes under the primary-authoritative c
 
 The local `config/herdr-visual-mode` file accepts `on` as an explicit opt-in to a shared native split-pane worker view, while absent, empty, or `off` preserves the existing task-tab layout.
 The file is local to each home and is not inherited into secondmate homes, so a secondmate home opts in with its own file.
-Visual mode takes precedence over presentation spaces for newly launched workers; [`herdr-backend.md`](herdr-backend.md#visual-mode) owns its layout, native controls, and recovery behavior.
+Visual mode takes precedence over presentation spaces for a clean new task, while a task resuming from a presentation journal keeps that journal's recovery; [`herdr-backend.md`](herdr-backend.md#visual-mode) owns its layout, native controls, and recovery behavior.
 
 For normal herdr operations, `HERDR_SESSION` selects the named session, but destructive test cleanup must not rely on `HERDR_SESSION` alone.
 Use the explicit guarded cleanup path described in [`docs/herdr-backend.md`](herdr-backend.md) instead of `herdr server stop`.

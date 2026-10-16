@@ -2688,21 +2688,37 @@ fm_backend_herdr_visual_abandon_pane() {  # <session> <pane> <zoomed-pane> <reas
 # room, the task warns and takes an ordinary tab outside the visual layout.
 # A home-local lock covers only target discovery, the split, and its
 # verification, so concurrent spawns wait their turn rather than fail, and
-# none splits from geometry another spawn is changing. Echoes
-# "<tab_id> <pane_id> <on|off>", the last field saying whether the task
-# joined the visual layout.
+# none splits from geometry another spawn is changing. The session-wide
+# presentation lock, taken with the same bounded attempt task kill uses,
+# serializes the zoom snapshots and focus-safe zoom restores with every other
+# focus-sensitive Herdr mutation; when it is contended the task is still
+# created but no zoom is restored. Echoes "<tab_id> <pane_id> <on|off>", the
+# last field saying whether the task joined the visual layout.
 fm_backend_herdr_visual_create_task() {  # <container> <label> <cwd> <state-dir> <seeded-default-tab-id>
-  local lock="$4/.herdr-visual-layout.lock" out status
+  local lock="$4/.herdr-visual-layout.lock" session_lock="" attempt=0 keep_zoom=0 out status
   if ! declare -F fm_lock_try_acquire >/dev/null 2>&1; then
     # shellcheck source=bin/fm-wake-lib.sh
     . "$FM_BACKEND_HERDR_ROOT/bin/fm-wake-lib.sh"
   fi
   fm_lock_acquire_wait "$lock"
-  if out=$(fm_backend_herdr_visual_create_task_locked "$@"); then
+  if session_lock=$(fm_backend_herdr_presentation_session_lock_path "${1%%:*}"); then
+    while [ "$attempt" -lt 50 ]; do
+      if fm_lock_try_acquire "$session_lock"; then
+        keep_zoom=1
+        break
+      fi
+      sleep 0.1
+      attempt=$((attempt + 1))
+    done
+  fi
+  [ "$keep_zoom" = 1 ] \
+    || echo "warning: herdr session presentation lock unavailable; '$2' leaves any zoom in the visual tab unrestored" >&2
+  if out=$(fm_backend_herdr_visual_create_task_locked "$keep_zoom" "$@"); then
     status=0
   else
     status=$?
   fi
+  [ "$keep_zoom" = 0 ] || fm_lock_release "$session_lock" || true
   fm_lock_release "$lock" || true
   [ "$status" -ne 0 ] || printf '%s' "$out"
   return "$status"
@@ -2711,8 +2727,11 @@ fm_backend_herdr_visual_create_task() {  # <container> <label> <cwd> <state-dir>
 # Every task pane carries the ordinary fm-<id> label. A husk pane an earlier
 # failed spawn left under that label is closed once its replacement is
 # verified, and a live one refuses, as fm_backend_herdr_create_task does for
-# a duplicate task tab.
-fm_backend_herdr_visual_create_task_locked() {  # <container> <label> <cwd> <state-dir> <seeded-default-tab-id>
+# a duplicate task tab. <keep-zoom> is 1 only while the caller holds the
+# session presentation lock; otherwise no zoom snapshot is taken.
+fm_backend_herdr_visual_create_task_locked() {  # <keep-zoom> <container> <label> <cwd> <state-dir> <seeded-default-tab-id>
+  local keep_zoom=$1
+  shift
   local container=$1 label=$2 cwd=$3 state=$4 seeded_tab_id=${5:-}
   local session wsid list dup dup_list dup_panes="" dup_zoomed target status tab_id split_pane direction zoomed="" out pane_id actual_tab actual_pane mode=on
   session=${container%%:*}
@@ -2739,7 +2758,9 @@ EOF
     read -r tab_id split_pane direction <<EOF
 $target
 EOF
-    zoomed=$(fm_backend_herdr_visual_zoom_snapshot "$session" "$split_pane")
+    if [ "$keep_zoom" = 1 ]; then
+      zoomed=$(fm_backend_herdr_visual_zoom_snapshot "$session" "$split_pane")
+    fi
     out=$(fm_backend_herdr_cli "$session" pane split "$split_pane" --direction "$direction" --cwd "$cwd" --no-focus 2>/dev/null) || {
       echo "error: herdr could not split visual pane $split_pane for '$label' (session $session)" >&2
       return 1
@@ -2786,7 +2807,10 @@ EOF
   fi
   while IFS= read -r dup; do
     [ -n "$dup" ] || continue
-    dup_zoomed=$(fm_backend_herdr_visual_zoom_snapshot "$session" "$dup")
+    dup_zoomed=""
+    if [ "$keep_zoom" = 1 ]; then
+      dup_zoomed=$(fm_backend_herdr_visual_zoom_snapshot "$session" "$dup")
+    fi
     fm_backend_herdr_cli "$session" pane close "$dup" >/dev/null 2>&1 || true
     fm_backend_herdr_visual_zoom_restore "$session" "$dup_zoomed" "$dup"
   done <<EOF

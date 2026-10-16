@@ -513,10 +513,12 @@ Visual mode uses Herdr's native controls instead of a Firstmate dashboard.
 With Herdr's default configuration, prefix-h/j/k/l changes the selected pane, prefix-Tab cycles panes, and prefix-z zooms or restores the selected pane.
 Herdr drops a tab's zoom whenever a pane in it is split or closed, so Firstmate zooms the selected worker again after it adds a visual worker, closes a leftover pane from a failed spawn, or tears a worker down.
 Zooming makes Herdr switch to that worker's tab, so Firstmate then restores the workspace and tab the user was viewing, and it skips the zoom when it cannot read that view first.
+Every zoom restore runs under the session-wide presentation lock that also serializes task kill, and a visual spawn that cannot take that lock within its bounded wait creates its worker without restoring any zoom.
 The sidebar and agent picker remain available for direct selection.
 User Herdr keybindings remain authoritative, and Firstmate does not edit `~/.config/herdr/config.toml`.
 
-Visual mode takes precedence over presentation spaces for a newly launched task because the two layouts conflict.
+Visual mode takes precedence over presentation spaces for a clean new task because the two layouts conflict.
+A task resuming from a presentation journal keeps that journal's recovery, including its duplicate-launch refusal, exact husk reclaim, and flat fallback, even while visual mode is on.
 `config/herdr-presentation-spaces` continues to control the existing one-task workspace projection whenever visual mode is off.
 
 ### Visual mode test
