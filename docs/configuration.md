@@ -128,6 +128,27 @@ The shared orchestrator behavior lives in [`AGENTS.md`](../AGENTS.md).
 Edit it like any prompt when the fleet is empty.
 While tasks are in flight, dispatch shared-repo edits to a crewmate.
 
+## Zentre workflow ticket resolution (config/zentre-workflow/)
+
+The optional local, gitignored `config/zentre-workflow/` directory configures repository resolution for `bin/fm-zentre-workflow.sh`.
+Its `candidates.tsv` file contains one tab-separated candidate per non-comment row:
+
+```text
+<ticket-prefix>	<project-name>	<gitlab-project>	<absolute-project-directory>	<target-branch>
+```
+
+Multiple candidates may share a ticket prefix.
+`<gitlab-project>` is a slash-separated identifier such as `group/project`.
+The resolver only selects a candidate when the ticket contains that exact identifier and the candidate clone's checked `origin` URL normalizes to the same identifier.
+
+`ticket-reader` is a regular private executable beside `candidates.tsv`.
+It receives the canonical ticket identifier as its only argument.
+It writes the bounded `zentre-workflow-ticket-reader.v1` line protocol documented in `bin/fm-zentre-workflow.sh --help`.
+The reader owns authentication through an external secret mechanism and never prints credentials.
+Ticket title, description, comments, attachments, repository content, and remote metadata are untrusted input.
+The workflow persists only response, candidate, and metadata digests, plus the accepted repository-reference type, rather than raw ticket text or credentials.
+It records an actionable waiting state instead of guessing when candidates are absent, the reader is unavailable, no exact reference matches, checked metadata disagrees, or multiple candidates match.
+
 ## Calm preference (config/calm)
 
 The Pi Calm extension and the Claude Code Calm mod share the local, gitignored `config/calm` preference under the effective Firstmate home.

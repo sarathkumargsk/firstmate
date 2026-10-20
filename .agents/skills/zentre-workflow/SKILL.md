@@ -10,18 +10,15 @@ metadata:
 Use `bin/fm-zentre-workflow.sh` as the durable workflow record.
 It coordinates existing Firstmate delegation, model selection, GitLab, report, and Sonar interfaces rather than replacing them.
 
-Create private `config/zentre-workflow/projects.tsv` before starting.
-Each tab-separated row maps a YouTrack prefix to one registered project:
-
-```text
-PROJ	project-name	group/project	/absolute/project/clone	main
-```
+Configure private ticket resolution with [`docs/configuration.md`](../../../docs/configuration.md#zentre-workflow-ticket-resolution-configzentre-workflow).
+That section owns the candidate schema, reader protocol, credential boundary, untrusted-input boundary, durable evidence, and decision cases.
 
 Create `config/zentre-workflow/review-families.tsv` too.
 Each tab-separated row maps one configured dispatch profile to an explicit review-isolation family.
 Do not derive that family from a harness name.
 
 Run `bin/fm-zentre-workflow.sh PROJ-123` to create or resume the active execution.
+Once a matching ticket has resolved, a resume validates the same configured candidate and metadata before reusing it without rereading the ticket source.
 Read its `next=` field, then delegate that stage through the ordinary task lifecycle.
 Use the existing dispatch resolver and dispatch profiles for model and effort choice.
 The reviewer profile supplied to `--complete spec-review` and `--complete code-review` must resolve to a different configured family than the author profile.

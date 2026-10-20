@@ -25,7 +25,15 @@ printf 'candidate\n' >> "$CANDIDATE_SOURCE/source.txt"
 git -C "$CANDIDATE_SOURCE" add source.txt
 git -C "$CANDIDATE_SOURCE" commit -qm candidate
 CANDIDATE_SHA=$(git -C "$CANDIDATE_SOURCE" rev-parse HEAD)
-printf 'PROJ\tzentre\tgroup/zentre\t%s\tmain\n' "$CANDIDATE_SOURCE" > "$HOME_ROOT/config/zentre-workflow/projects.tsv"
+git -C "$CANDIDATE_SOURCE" remote set-url origin https://gitlab.example/group/zentre.git
+printf 'PROJ\tzentre\tgroup/zentre\t%s\tmain\n' "$CANDIDATE_SOURCE" > "$HOME_ROOT/config/zentre-workflow/candidates.tsv"
+cat > "$HOME_ROOT/config/zentre-workflow/ticket-reader" <<'SH'
+#!/usr/bin/env bash
+printf 'schema=zentre-workflow-ticket-reader.v1\n'
+printf 'ticket=%s\n' "$1"
+printf 'description=group/zentre\n'
+SH
+chmod +x "$HOME_ROOT/config/zentre-workflow/ticket-reader"
 cat > "$HOME_ROOT/config/zentre-workflow/review-families.tsv" <<'EOF'
 openai-author	openai
 openai-reviewer	openai
@@ -116,9 +124,127 @@ test_confirmed_restart_archives_prior_effect_receipts() {
   pass "zentre-workflow restart creates a distinct execution and archives prior effect receipts"
 }
 
+RESOLUTION_ALPHA="$TMP_ROOT/resolution-alpha"
+RESOLUTION_BETA="$TMP_ROOT/resolution-beta"
+git clone -q "$BASE_SOURCE" "$RESOLUTION_ALPHA"
+git clone -q "$BASE_SOURCE" "$RESOLUTION_BETA"
+git -C "$RESOLUTION_ALPHA" remote set-url origin https://gitlab.example/group/alpha.git
+git -C "$RESOLUTION_BETA" remote set-url origin https://gitlab.example/group/beta.git
+
+make_resolution_home() {
+  RESOLUTION_HOME="$TMP_ROOT/resolution-home-$1"
+  mkdir -p "$RESOLUTION_HOME/config/zentre-workflow" "$RESOLUTION_HOME/data"
+  cat > "$RESOLUTION_HOME/config/zentre-workflow/ticket-reader" <<'SH'
+#!/usr/bin/env bash
+case "${FM_ZENTRE_TEST_READER_MODE:-unique}" in
+  unique)
+    evidence='group/alpha'
+    ;;
+  no-match)
+    evidence='unrelated repository'
+    ;;
+  ambiguous)
+    evidence='group/alpha and group/beta'
+    ;;
+  unreachable)
+    exit 1
+    ;;
+  *)
+    exit 2
+    ;;
+esac
+printf 'schema=zentre-workflow-ticket-reader.v1\n'
+printf 'ticket=%s\n' "$1"
+printf 'description=%s\n' "$evidence"
+SH
+  chmod +x "$RESOLUTION_HOME/config/zentre-workflow/ticket-reader"
+}
+
+write_resolution_candidates() {
+  printf 'PROJ\talpha\tgroup/alpha\t%s\tmain\n' "$RESOLUTION_ALPHA" \
+    > "$RESOLUTION_HOME/config/zentre-workflow/candidates.tsv"
+  printf 'PROJ\tbeta\tgroup/beta\t%s\tmain\n' "$RESOLUTION_BETA" \
+    >> "$RESOLUTION_HOME/config/zentre-workflow/candidates.tsv"
+}
+
+run_resolution() {
+  FM_HOME="$RESOLUTION_HOME" "$SCRIPT" "$@"
+}
+
+test_unique_repository_selection_is_durable_and_resumable() {
+  local out resolution
+  make_resolution_home unique
+  write_resolution_candidates
+  out=$(FM_ZENTRE_TEST_READER_MODE=unique run_resolution PROJ-234) \
+    || fail "unique repository evidence was refused"
+  assert_contains "$out" 'repository=group/alpha' "unique repository was not selected"
+  assert_contains "$out" 'stage=analysis' "resolved workflow did not start at analysis"
+  resolution="$RESOLUTION_HOME/data/zentre-workflow/executions/PROJ-234/resolution"
+  assert_contains "$(cat "$resolution")" 'status=resolved' "selected repository was not durable"
+  assert_contains "$(cat "$resolution")" 'evidence=literal-repository-reference:group/alpha' \
+    "durable resolution did not record its evidence"
+  out=$(FM_ZENTRE_TEST_READER_MODE=unreachable run_resolution PROJ-234) \
+    || fail "matching resolved ticket did not reuse durable selection"
+  assert_contains "$out" 'repository=group/alpha' "resumed workflow changed the selected repository"
+  pass "zentre-workflow resolves one configured repository from ticket evidence and reuses it without rereading the ticket"
+}
+
+test_repository_resolution_pauses_on_no_match() {
+  local out resolution status=0
+  make_resolution_home no-match
+  write_resolution_candidates
+  out=$(FM_ZENTRE_TEST_READER_MODE=no-match run_resolution PROJ-235 2>&1) || status=$?
+  [ "$status" -eq 4 ] || fail "unmatched ticket evidence did not pause"
+  assert_contains "$out" 'reason=ticket-evidence-insufficient' "unmatched ticket did not name the evidence decision"
+  assert_contains "$out" 'next=add-exact-repository-reference' "unmatched ticket did not provide an actionable decision"
+  resolution="$RESOLUTION_HOME/data/zentre-workflow/executions/PROJ-235/resolution"
+  assert_contains "$(cat "$resolution")" 'status=waiting_for_approval' \
+    "unmatched ticket did not preserve its actionable pause"
+  assert_not_contains "$(cat "$resolution")" 'unrelated repository' \
+    "unmatched ticket stored untrusted source text"
+  pass "zentre-workflow pauses rather than guessing when ticket evidence matches no repository"
+}
+
+test_repository_resolution_pauses_on_ambiguity() {
+  local out status=0
+  make_resolution_home ambiguous
+  write_resolution_candidates
+  out=$(FM_ZENTRE_TEST_READER_MODE=ambiguous run_resolution PROJ-236 2>&1) || status=$?
+  [ "$status" -eq 4 ] || fail "ambiguous ticket evidence did not pause"
+  assert_contains "$out" 'reason=repository-ambiguous' "ambiguous ticket did not name the repository decision"
+  assert_contains "$out" 'next=choose-repository-candidate' "ambiguous ticket did not provide an actionable decision"
+  pass "zentre-workflow pauses rather than choosing between multiple matching repositories"
+}
+
+test_repository_resolution_pauses_when_reader_is_unreachable() {
+  local out status=0
+  make_resolution_home unreachable
+  write_resolution_candidates
+  out=$(FM_ZENTRE_TEST_READER_MODE=unreachable run_resolution PROJ-237 2>&1) || status=$?
+  [ "$status" -eq 4 ] || fail "unreachable ticket reader did not pause"
+  assert_contains "$out" 'reason=ticket-source-unreachable' "unreachable reader was not recorded safely"
+  assert_contains "$out" 'next=restore-ticket-reader' "unreachable reader did not provide an actionable decision"
+  pass "zentre-workflow pauses when the configured ticket reader is unavailable"
+}
+
+test_repository_resolution_pauses_without_candidates() {
+  local out status=0
+  make_resolution_home absent
+  out=$(run_resolution PROJ-238 2>&1) || status=$?
+  [ "$status" -eq 4 ] || fail "absent candidate configuration did not pause"
+  assert_contains "$out" 'reason=repository-candidates-absent' "absent candidates were not recorded"
+  assert_contains "$out" 'next=configure-repository-candidates' "absent candidates did not provide an actionable decision"
+  pass "zentre-workflow pauses when no repository candidates are configured"
+}
+
 test_start_or_resume_and_pause
 test_cross_family_and_branch_deduplication
 test_drift_pauses_and_sonar_requires_base_and_candidate_evidence
 test_confirmed_restart_archives_prior_effect_receipts
+test_unique_repository_selection_is_durable_and_resumable
+test_repository_resolution_pauses_on_no_match
+test_repository_resolution_pauses_on_ambiguity
+test_repository_resolution_pauses_when_reader_is_unreachable
+test_repository_resolution_pauses_without_candidates
 
 echo '# fm-zentre-workflow.test.sh: all assertions passed'

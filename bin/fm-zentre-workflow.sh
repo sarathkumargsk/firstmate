@@ -12,14 +12,28 @@
 #       --base-sha <sha> --candidate-sha <sha> --config-digest <digest>
 #   Sonar stage completion also needs --source-dir <clean-source-at-recorded-revision>.
 #
-# Configuration is private, under $FM_HOME/config/zentre-workflow/projects.tsv.
+# Configuration is private, under $FM_HOME/config/zentre-workflow/candidates.tsv.
 # Each non-comment row is tab-separated:
 #   <ticket-prefix> <project-name> <gitlab-project> <project-directory> <target-branch>
+# Multiple candidates may share a ticket prefix.
 #
-# The command does not fetch tickets, create branches, spawn agents, call GitLab,
-# or invoke SonarQube itself. Those operations stay with Firstmate's established
-# agent, model-routing, glab, and sonar-gate interfaces. It supplies their durable
-# workflow identity, stage order, input evidence, and write-ahead operation records.
+# $FM_HOME/config/zentre-workflow/ticket-reader is a private executable adapter.
+# It receives the canonical ticket identifier as its only argument and writes this
+# bounded, line-oriented protocol to stdout:
+#   schema=zentre-workflow-ticket-reader.v1
+#   ticket=PROJ-123
+#   title=<single-line untrusted text>
+#   description=<single-line untrusted text>
+#   comment=<single-line untrusted text>
+#   attachment=<single-line untrusted text>
+# title and description are optional once each; comment and attachment may repeat.
+# The adapter obtains credentials itself and must never emit them.
+#
+# The command reads ticket evidence only through the private adapter.
+# It does not create branches, spawn agents, call GitLab, or invoke SonarQube itself.
+# Those operations stay with Firstmate's established agent, model-routing, glab, and
+# sonar-gate interfaces. It supplies their durable workflow identity, stage order,
+# input evidence, and write-ahead operation records.
 # A caller records an operation intent before an external call and its reference
 # after success. A repeated intent asks the caller to reconcile rather than repeat
 # a possibly successful remote effect.
@@ -40,7 +54,7 @@ FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 CONFIG="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"
 DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
-CONFIG_FILE="$CONFIG/zentre-workflow/projects.tsv"
+CONFIG_FILE="$CONFIG/zentre-workflow/candidates.tsv"
 ROOT="$DATA/zentre-workflow/executions"
 STATE="$DATA/zentre-workflow"
 # shellcheck source=bin/fm-wake-lib.sh
@@ -82,28 +96,407 @@ ticket_value() {
   [[ "$1" =~ ^[A-Z0-9]+-[1-9][0-9]*$ ]]
 }
 
-find_project() {
-  local prefix row_prefix row_project row_repo row_dir row_target extra
+repository_value() {
+  [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*(/[A-Za-z0-9][A-Za-z0-9._-]*)+$ ]]
+}
+
+branch_value() {
+  [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*$ ]]
+}
+
+hash_file() {
+  local digest
+  digest=$(shasum -a 256 "$1" 2>/dev/null) || die "could not digest private workflow input"
+  digest=${digest%% *}
+  digest_value "$digest" || die "could not digest private workflow input"
+  printf '%s' "$digest"
+}
+
+hash_candidate() {
+  local digest
+  digest=$(printf 'prefix=%s\nproject=%s\nrepository=%s\ndirectory=%s\ntarget=%s\n' \
+    "$1" "$2" "$3" "$4" "$5" | shasum -a 256 2>/dev/null) \
+    || die "could not digest repository candidate"
+  digest=${digest%% *}
+  digest_value "$digest" || die "could not digest repository candidate"
+  printf '%s' "$digest"
+}
+
+hash_metadata() {
+  local digest
+  digest=$(printf 'repository=%s\nroot=%s\norigin=%s\ntarget=%s\n' \
+    "$1" "$2" "$3" "$4" | shasum -a 256 2>/dev/null) \
+    || die "could not digest repository metadata"
+  digest=${digest%% *}
+  digest_value "$digest" || die "could not digest repository metadata"
+  printf '%s' "$digest"
+}
+
+resolution_get() { # <key>
+  local want=$1 key value count=0 result=
+  [ -f "$RESOLUTION_FILE" ] && [ ! -L "$RESOLUTION_FILE" ] || return 1
+  while IFS='=' read -r key value; do
+    [ "$key" = "$want" ] || continue
+    count=$((count + 1))
+    result=$value
+  done < "$RESOLUTION_FILE"
+  [ "$count" -eq 1 ] || return 1
+  printf '%s' "$result"
+}
+
+resolution_read() {
+  local key value
+  for key in version ticket status reason project repository project_dir target_branch \
+    ticket_digest candidate_digest metadata_digest evidence updated_at; do
+    value=$(resolution_get "$key") \
+      || die "corrupt repository resolution: missing or duplicate $key in $RESOLUTION_FILE"
+    safe_text "$value" || die "corrupt repository resolution: unsafe $key in $RESOLUTION_FILE"
+    case "$key" in
+      version) RESOLUTION_VERSION=$value ;;
+      ticket) RESOLUTION_TICKET=$value ;;
+      status) RESOLUTION_STATUS=$value ;;
+      reason) RESOLUTION_REASON=$value ;;
+      project) RESOLUTION_PROJECT=$value ;;
+      repository) RESOLUTION_REPOSITORY=$value ;;
+      project_dir) RESOLUTION_PROJECT_DIR=$value ;;
+      target_branch) RESOLUTION_TARGET_BRANCH=$value ;;
+      ticket_digest) RESOLUTION_TICKET_DIGEST=$value ;;
+      candidate_digest) RESOLUTION_CANDIDATE_DIGEST=$value ;;
+      metadata_digest) RESOLUTION_METADATA_DIGEST=$value ;;
+      evidence) RESOLUTION_EVIDENCE=$value ;;
+      updated_at) RESOLUTION_UPDATED_AT=$value ;;
+    esac
+  done
+  [ "$RESOLUTION_VERSION" = 1 ] || die "unsupported repository resolution version $RESOLUTION_VERSION"
+  [ "$RESOLUTION_TICKET" = "$TICKET" ] \
+    || die "repository resolution does not match ticket"
+  case "$RESOLUTION_STATUS" in resolved|waiting_for_approval) ;; *) die "corrupt repository resolution status" ;; esac
+  if [ "$RESOLUTION_STATUS" = resolved ]; then
+    [ "$RESOLUTION_REASON" = resolved ] && safe_name "$RESOLUTION_PROJECT" \
+      && repository_value "$RESOLUTION_REPOSITORY" && safe_value "$RESOLUTION_PROJECT_DIR" \
+      && branch_value "$RESOLUTION_TARGET_BRANCH" && digest_value "$RESOLUTION_TICKET_DIGEST" \
+      && digest_value "$RESOLUTION_CANDIDATE_DIGEST" && digest_value "$RESOLUTION_METADATA_DIGEST" \
+      && [ -n "$RESOLUTION_EVIDENCE" ] \
+      || die "corrupt resolved repository selection"
+  fi
+}
+
+resolution_write() {
+  local tmp now
+  now=$(date +%s) || die "could not read time"
+  tmp=$(umask 077; mktemp "$TICKET_ROOT/.resolution.XXXXXX") \
+    || die "could not create repository resolution replacement"
+  {
+    printf 'version=1\n'
+    printf 'ticket=%s\n' "$TICKET"
+    printf 'status=%s\n' "$RESOLUTION_STATUS"
+    printf 'reason=%s\n' "$RESOLUTION_REASON"
+    printf 'project=%s\n' "$RESOLUTION_PROJECT"
+    printf 'repository=%s\n' "$RESOLUTION_REPOSITORY"
+    printf 'project_dir=%s\n' "$RESOLUTION_PROJECT_DIR"
+    printf 'target_branch=%s\n' "$RESOLUTION_TARGET_BRANCH"
+    printf 'ticket_digest=%s\n' "$RESOLUTION_TICKET_DIGEST"
+    printf 'candidate_digest=%s\n' "$RESOLUTION_CANDIDATE_DIGEST"
+    printf 'metadata_digest=%s\n' "$RESOLUTION_METADATA_DIGEST"
+    printf 'evidence=%s\n' "$RESOLUTION_EVIDENCE"
+    printf 'updated_at=%s\n' "$now"
+  } > "$tmp" || { rm -f "$tmp"; die "could not write repository resolution replacement"; }
+  mv -f "$tmp" "$RESOLUTION_FILE" \
+    || { rm -f "$tmp"; die "could not publish repository resolution"; }
+  RESOLUTION_UPDATED_AT=$now
+}
+
+resolution_next() {
+  case "$RESOLUTION_REASON" in
+    repository-candidates-absent) printf 'next=configure-repository-candidates\n' ;;
+    ticket-source-unreachable) printf 'next=restore-ticket-reader\n' ;;
+    ticket-evidence-insufficient) printf 'next=add-exact-repository-reference\n' ;;
+    repository-ambiguous) printf 'next=choose-repository-candidate\n' ;;
+    repository-metadata-mismatch) printf 'next=repair-repository-metadata\n' ;;
+    repository-resolution-drift) printf 'next=confirm-repository-resolution\n' ;;
+    *) printf 'next=none\n' ;;
+  esac
+}
+
+emit_resolution() {
+  printf 'ticket=%s\nrepository=%s\nproject=%s\n' \
+    "$TICKET" "$RESOLUTION_REPOSITORY" "$RESOLUTION_PROJECT"
+  printf 'state=%s\nreason=%s\nevidence=%s\n' \
+    "$RESOLUTION_STATUS" "$RESOLUTION_REASON" "$RESOLUTION_EVIDENCE"
+  resolution_next
+}
+
+resolution_wait() { # <reason>
+  RESOLUTION_STATUS=waiting_for_approval
+  RESOLUTION_REASON=$1
+  RESOLUTION_PROJECT=''
+  RESOLUTION_REPOSITORY=''
+  RESOLUTION_PROJECT_DIR=''
+  RESOLUTION_TARGET_BRANCH=''
+  RESOLUTION_CANDIDATE_DIGEST=''
+  RESOLUTION_METADATA_DIGEST=''
+  RESOLUTION_EVIDENCE=''
+  resolution_write
+  emit_resolution
+  return 4
+}
+
+load_candidates() {
+  local prefix row_prefix row_project row_repo row_dir row_target extra digest
+  CANDIDATE_COUNT=0
+  CANDIDATE_PROJECT=()
+  CANDIDATE_REPOSITORY=()
+  CANDIDATE_DIRECTORY=()
+  CANDIDATE_TARGET=()
+  CANDIDATE_DIGEST=()
   [ -f "$CONFIG_FILE" ] && [ ! -L "$CONFIG_FILE" ] \
-    || die "project mapping is required at $CONFIG_FILE"
+    || { resolution_wait repository-candidates-absent; return $?; }
   prefix=${TICKET%%-*}
   while IFS=$'\t' read -r row_prefix row_project row_repo row_dir row_target extra; do
     case "$row_prefix" in ''|'#'*) continue ;; esac
-    [ -z "$extra" ] || die "invalid project mapping row for $row_prefix"
-    [ "$row_prefix" = "$prefix" ] || continue
+    [ -z "$extra" ] || die "invalid repository candidate row for $row_prefix"
     [ -n "$row_project" ] && [ -n "$row_repo" ] && [ -n "$row_dir" ] && [ -n "$row_target" ] \
-      || die "incomplete project mapping for $prefix"
-    if ! safe_value "$row_project" || ! safe_value "$row_repo" || ! safe_value "$row_dir" \
-      || ! safe_value "$row_target"; then
-      die "unsafe project mapping for $prefix"
+      || die "incomplete repository candidate for $row_prefix"
+    if ! safe_name "$row_prefix" || ! safe_name "$row_project" || ! repository_value "$row_repo" \
+      || ! safe_value "$row_dir" || ! branch_value "$row_target" || [[ "$row_dir" != /* ]]; then
+      die "unsafe repository candidate for $row_prefix"
     fi
-    PROJECT=$row_project
-    REPOSITORY=$row_repo
-    PROJECT_DIR=$row_dir
-    TARGET_BRANCH=$row_target
-    return 0
+    [ "$row_prefix" = "$prefix" ] || continue
+    digest=$(hash_candidate "$row_prefix" "$row_project" "$row_repo" "$row_dir" "$row_target")
+    CANDIDATE_PROJECT[CANDIDATE_COUNT]=$row_project
+    CANDIDATE_REPOSITORY[CANDIDATE_COUNT]=$row_repo
+    CANDIDATE_DIRECTORY[CANDIDATE_COUNT]=$row_dir
+    CANDIDATE_TARGET[CANDIDATE_COUNT]=$row_target
+    CANDIDATE_DIGEST[CANDIDATE_COUNT]=$digest
+    CANDIDATE_COUNT=$((CANDIDATE_COUNT + 1))
   done < "$CONFIG_FILE"
-  die "no project mapping for ticket prefix $prefix"
+  [ "$CANDIDATE_COUNT" -gt 0 ] || { resolution_wait repository-candidates-absent; return $?; }
+}
+
+repository_from_remote() { # <untrusted remote URL>
+  local remote=$1 path
+  safe_text "$remote" || return 1
+  case "$remote" in
+    git@*:*) path=${remote#*:} ;;
+    ssh://*|http://*|https://*)
+      path=${remote#*://}
+      case "$path" in */*) path=${path#*/} ;; *) return 1 ;; esac
+      ;;
+    *) return 1 ;;
+  esac
+  path=${path%.git}
+  repository_value "$path" || return 1
+  printf '%s' "$path"
+}
+
+candidate_metadata() { # <repository> <directory> <target>
+  local repository=$1 directory=$2 target=$3 root configured_root remote origin
+  [ -d "$directory" ] || return 1
+  configured_root=$(cd "$directory" && pwd -P) || return 1
+  safe_value "$configured_root" || return 1
+  root=$(git -C "$directory" rev-parse --show-toplevel 2>/dev/null) || return 1
+  safe_value "$root" || return 1
+  [ "$root" = "$configured_root" ] || return 1
+  remote=$(git -C "$directory" remote get-url origin 2>/dev/null) || return 1
+  origin=$(repository_from_remote "$remote") || return 1
+  [ "$origin" = "$repository" ] || return 1
+  CANDIDATE_METADATA_DIGEST=$(hash_metadata "$repository" "$root" "$origin" "$target")
+}
+
+ticket_evidence_has_repository() { # <evidence-file> <repository>
+  local evidence_file=$1 repository=$2
+  LC_ALL=C awk -v repository="$repository" '
+    function is_repository_char(character) {
+      return character ~ /^[[:alnum:]_.\/-]$/
+    }
+    function contains_exact(value, before, after, position, remainder) {
+      remainder = value
+      while ((position = index(remainder, repository)) > 0) {
+        before = (position == 1 ? "" : substr(remainder, position - 1, 1))
+        after = substr(remainder, position + length(repository), 1)
+        if ((before == "" || !is_repository_char(before)) \
+            && (after == "" || !is_repository_char(after))) {
+          return 1
+        }
+        remainder = substr(remainder, position + length(repository))
+      }
+      return 0
+    }
+    contains_exact($0) { found = 1 }
+    END { exit(found ? 0 : 1) }
+  ' "$evidence_file" \
+    || LC_ALL=C awk -v repository="${repository}.git" '
+      function is_repository_char(character) {
+        return character ~ /^[[:alnum:]_.\/-]$/
+      }
+      function contains_exact(value, before, after, position, remainder) {
+        remainder = value
+        while ((position = index(remainder, repository)) > 0) {
+          before = (position == 1 ? "" : substr(remainder, position - 1, 1))
+          after = substr(remainder, position + length(repository), 1)
+          if ((before == "" || !is_repository_char(before)) \
+              && (after == "" || !is_repository_char(after))) {
+            return 1
+          }
+          remainder = substr(remainder, position + length(repository))
+        }
+        return 0
+      }
+      contains_exact($0) { found = 1 }
+      END { exit(found ? 0 : 1) }
+    ' "$evidence_file"
+}
+
+read_ticket_evidence() {
+  local reader reader_output line key value seen_schema=0 seen_ticket=0 reader_valid=1
+  reader="$CONFIG/zentre-workflow/ticket-reader"
+  [ -f "$reader" ] && [ ! -L "$reader" ] && [ -x "$reader" ] || return 1
+  reader_output=$(umask 077; mktemp "${TMPDIR:-/tmp}/fm-zentre-ticket-reader.XXXXXX") \
+    || die "could not read ticket"
+  READER_EVIDENCE_FILE=$(umask 077; mktemp "${TMPDIR:-/tmp}/fm-zentre-ticket-evidence.XXXXXX") \
+    || { rm -f "$reader_output"; die "could not prepare ticket evidence"; }
+  if ! (ulimit -f 128; "$reader" "$TICKET" > "$reader_output" 2>/dev/null); then
+    rm -f "$reader_output" "$READER_EVIDENCE_FILE"
+    return 1
+  fi
+  [ "$(wc -c < "$reader_output" | tr -d ' ')" -le 65536 ] \
+    || { rm -f "$reader_output" "$READER_EVIDENCE_FILE"; return 1; }
+  while IFS= read -r line || [ -n "$line" ]; do
+    key=${line%%=*}
+    value=${line#*=}
+    if [ "$key" = "$line" ] || ! safe_text "$value"; then
+      reader_valid=0
+      break
+    fi
+    case "$key" in
+      schema)
+        if [ "$seen_schema" -ne 0 ] || [ "$value" != zentre-workflow-ticket-reader.v1 ]; then
+          reader_valid=0
+          break
+        fi
+        seen_schema=1
+        ;;
+      ticket)
+        if [ "$seen_ticket" -ne 0 ] || [ "$value" != "$TICKET" ]; then
+          reader_valid=0
+          break
+        fi
+        seen_ticket=1
+        ;;
+      title|description|comment|attachment)
+        if ! printf '%s\n' "$value" >> "$READER_EVIDENCE_FILE"; then
+          reader_valid=0
+          break
+        fi
+        ;;
+      *) reader_valid=0; break ;;
+    esac
+  done < "$reader_output"
+  if [ "$reader_valid" -ne 1 ]; then
+    rm -f "$reader_output" "$READER_EVIDENCE_FILE"
+    return 1
+  fi
+  READER_TICKET_DIGEST=$(hash_file "$reader_output")
+  rm -f "$reader_output"
+  [ "$seen_schema" -eq 1 ] && [ "$seen_ticket" -eq 1 ] \
+    || { rm -f "$READER_EVIDENCE_FILE"; return 1; }
+}
+
+reuse_resolved_project() {
+  local index=0 metadata_status
+  [ -e "$RESOLUTION_FILE" ] || return 1
+  resolution_read
+  [ "$RESOLUTION_STATUS" = resolved ] || return 1
+  [ "$RESOLUTION_REASON" = resolved ] || die "corrupt repository resolution reason"
+  while [ "$index" -lt "$CANDIDATE_COUNT" ]; do
+    if [ "${CANDIDATE_PROJECT[$index]}" = "$RESOLUTION_PROJECT" ] \
+      && [ "${CANDIDATE_REPOSITORY[$index]}" = "$RESOLUTION_REPOSITORY" ] \
+      && [ "${CANDIDATE_DIRECTORY[$index]}" = "$RESOLUTION_PROJECT_DIR" ] \
+      && [ "${CANDIDATE_TARGET[$index]}" = "$RESOLUTION_TARGET_BRANCH" ] \
+      && [ "${CANDIDATE_DIGEST[$index]}" = "$RESOLUTION_CANDIDATE_DIGEST" ]; then
+      CANDIDATE_METADATA_DIGEST=''
+      candidate_metadata "${CANDIDATE_REPOSITORY[$index]}" \
+        "${CANDIDATE_DIRECTORY[$index]}" "${CANDIDATE_TARGET[$index]}"
+      metadata_status=$?
+      if [ "$metadata_status" -ne 0 ] \
+        || [ "$CANDIDATE_METADATA_DIGEST" != "$RESOLUTION_METADATA_DIGEST" ]; then
+        resolution_wait repository-resolution-drift
+        return $?
+      fi
+      PROJECT=${CANDIDATE_PROJECT[$index]}
+      REPOSITORY=${CANDIDATE_REPOSITORY[$index]}
+      PROJECT_DIR=${CANDIDATE_DIRECTORY[$index]}
+      TARGET_BRANCH=${CANDIDATE_TARGET[$index]}
+      return 0
+    fi
+    index=$((index + 1))
+  done
+  resolution_wait repository-resolution-drift
+}
+
+resolve_project() {
+  local index=0 selected_count=0 selected_index=-1 metadata_mismatch=0 reuse_status
+  [ ! -L "$RESOLUTION_FILE" ] || die "repository resolution must not be a symlink"
+  load_candidates || return $?
+  reuse_resolved_project
+  reuse_status=$?
+  if [ "$reuse_status" -eq 0 ]; then
+    return 0
+  fi
+  case "$reuse_status" in
+    1) ;;
+    *) return "$reuse_status" ;;
+  esac
+  if ! read_ticket_evidence; then
+    resolution_wait ticket-source-unreachable
+    return $?
+  fi
+  while [ "$index" -lt "$CANDIDATE_COUNT" ]; do
+    if ticket_evidence_has_repository "$READER_EVIDENCE_FILE" "${CANDIDATE_REPOSITORY[$index]}"; then
+      if candidate_metadata "${CANDIDATE_REPOSITORY[$index]}" \
+        "${CANDIDATE_DIRECTORY[$index]}" "${CANDIDATE_TARGET[$index]}"; then
+        selected_index=$index
+        selected_count=$((selected_count + 1))
+      else
+        metadata_mismatch=1
+      fi
+    fi
+    index=$((index + 1))
+  done
+  rm -f "$READER_EVIDENCE_FILE"
+  case "$selected_count" in
+    0)
+      if [ "$metadata_mismatch" -eq 1 ]; then
+        resolution_wait repository-metadata-mismatch
+      else
+        resolution_wait ticket-evidence-insufficient
+      fi
+      return $?
+      ;;
+    1)
+      PROJECT=${CANDIDATE_PROJECT[$selected_index]}
+      REPOSITORY=${CANDIDATE_REPOSITORY[$selected_index]}
+      PROJECT_DIR=${CANDIDATE_DIRECTORY[$selected_index]}
+      TARGET_BRANCH=${CANDIDATE_TARGET[$selected_index]}
+      candidate_metadata "$REPOSITORY" "$PROJECT_DIR" "$TARGET_BRANCH" \
+        || die "repository metadata changed during resolution"
+      RESOLUTION_STATUS=resolved
+      RESOLUTION_REASON=resolved
+      RESOLUTION_PROJECT=$PROJECT
+      RESOLUTION_REPOSITORY=$REPOSITORY
+      RESOLUTION_PROJECT_DIR=$PROJECT_DIR
+      RESOLUTION_TARGET_BRANCH=$TARGET_BRANCH
+      RESOLUTION_TICKET_DIGEST=$READER_TICKET_DIGEST
+      RESOLUTION_CANDIDATE_DIGEST=${CANDIDATE_DIGEST[$selected_index]}
+      RESOLUTION_METADATA_DIGEST=$CANDIDATE_METADATA_DIGEST
+      RESOLUTION_EVIDENCE="literal-repository-reference:$REPOSITORY"
+      resolution_write
+      ;;
+    *)
+      resolution_wait repository-ambiguous
+      return $?
+      ;;
+  esac
 }
 
 review_family() { # <configured-profile>
@@ -142,7 +535,8 @@ state_read() {
     ticket_digest base_sha candidate_sha config_digest branch analysis_artifact specification_artifact \
     implementation_artifact sonar_baseline_report sonar_candidate_report spec_author_profile \
     spec_reviewer_profile code_author_profile code_reviewer_profile spec_iteration code_iteration \
-    sonar_iteration reason updated_at; do
+    sonar_iteration resolution_ticket_digest resolution_candidate_digest \
+    resolution_metadata_digest resolution_evidence reason updated_at; do
     value=$(state_get "$key") || die "corrupt state: missing or duplicate $key in $STATE_FILE"
     safe_text "$value" || die "corrupt state: unsafe $key in $STATE_FILE"
     case "$key" in
@@ -162,13 +556,25 @@ state_read() {
       spec_reviewer_profile) SPEC_REVIEWER_PROFILE=$value ;;
       code_author_profile) CODE_AUTHOR_PROFILE=$value ;;
       code_reviewer_profile) CODE_REVIEWER_PROFILE=$value ;;
+      resolution_ticket_digest) STATE_RESOLUTION_TICKET_DIGEST=$value ;;
+      resolution_candidate_digest) STATE_RESOLUTION_CANDIDATE_DIGEST=$value ;;
+      resolution_metadata_digest) STATE_RESOLUTION_METADATA_DIGEST=$value ;;
+      resolution_evidence) STATE_RESOLUTION_EVIDENCE=$value ;;
       reason) WAIT_REASON=$value ;;
       updated_at) UPDATED_AT=$value ;;
     esac
   done
-  [ "$VERSION" = 1 ] || die "unsupported state version $VERSION"
-  [ "$STATE_TICKET" = "$TICKET" ] && [ "$STATE_REPOSITORY" = "$REPOSITORY" ] \
-    || die "state identity does not match ticket mapping"
+  [ "$VERSION" = 2 ] || die "unsupported state version $VERSION"
+  [ "$STATE_TICKET" = "$TICKET" ] && [ "$STATE_PROJECT" = "$PROJECT" ] \
+    && [ "$STATE_REPOSITORY" = "$REPOSITORY" ] \
+    && [ "$STATE_PROJECT_DIR" = "$PROJECT_DIR" ] \
+    && [ "$STATE_TARGET_BRANCH" = "$TARGET_BRANCH" ] \
+    || die "state identity does not match resolved repository"
+  [ "$STATE_RESOLUTION_TICKET_DIGEST" = "$RESOLUTION_TICKET_DIGEST" ] \
+    && [ "$STATE_RESOLUTION_CANDIDATE_DIGEST" = "$RESOLUTION_CANDIDATE_DIGEST" ] \
+    && [ "$STATE_RESOLUTION_METADATA_DIGEST" = "$RESOLUTION_METADATA_DIGEST" ] \
+    && [ "$STATE_RESOLUTION_EVIDENCE" = "$RESOLUTION_EVIDENCE" ] \
+    || die "state repository resolution does not match durable resolution"
 }
 
 state_write() {
@@ -176,7 +582,7 @@ state_write() {
   now=$(date +%s) || die "could not read time"
   tmp=$(umask 077; mktemp "$RUN_DIR/.state.XXXXXX") || die "could not create state replacement"
   {
-    printf 'version=1\n'
+    printf 'version=2\n'
     printf 'execution_id=%s\n' "$EXECUTION_ID"
     printf 'ticket=%s\n' "$TICKET"
     printf 'project=%s\n' "$PROJECT"
@@ -199,6 +605,10 @@ state_write() {
     printf 'spec_reviewer_profile=%s\n' "$SPEC_REVIEWER_PROFILE"
     printf 'code_author_profile=%s\n' "$CODE_AUTHOR_PROFILE"
     printf 'code_reviewer_profile=%s\n' "$CODE_REVIEWER_PROFILE"
+    printf 'resolution_ticket_digest=%s\n' "$RESOLUTION_TICKET_DIGEST"
+    printf 'resolution_candidate_digest=%s\n' "$RESOLUTION_CANDIDATE_DIGEST"
+    printf 'resolution_metadata_digest=%s\n' "$RESOLUTION_METADATA_DIGEST"
+    printf 'resolution_evidence=%s\n' "$RESOLUTION_EVIDENCE"
     printf 'reason=%s\n' "$WAIT_REASON"
     printf 'spec_iteration=%s\n' "$SPEC_ITERATION"
     printf 'code_iteration=%s\n' "$CODE_ITERATION"
@@ -447,11 +857,6 @@ TICKET=${1:-}
 [ -n "$TICKET" ] || usage
 shift || true
 ticket_value "$TICKET" || die "ticket must use canonical uppercase form such as PROJ-123"
-find_project
-RUN_KEY=$(printf '%s' "$REPOSITORY" | shasum -a 256 | awk '{print substr($1, 1, 16)}')
-RUN_DIR="$ROOT/$TICKET/$RUN_KEY"
-STATE_FILE="$RUN_DIR/state"
-HISTORY_FILE="$RUN_DIR/history.tsv"
 
 MODE=start COMPLETE_STAGE='' OPERATION='' OPERATION_ID='' OPERATION_REFERENCE=''
 INPUT_DIGEST='' CONFIG_INPUT_DIGEST='' BASE_INPUT_SHA='' CANDIDATE_INPUT_SHA='' ARTIFACT='' BRANCH='' SONAR_SOURCE_DIR=''
@@ -484,7 +889,31 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
-mkdir -p "$ROOT/$TICKET" || die "could not create workflow state root"
+TICKET_ROOT="$ROOT/$TICKET"
+RESOLUTION_FILE="$TICKET_ROOT/resolution"
+RESOLUTION_LOCK="$TICKET_ROOT/.resolution-lock"
+RESOLUTION_VERSION='' RESOLUTION_STATUS='' RESOLUTION_REASON=''
+RESOLUTION_TICKET='' RESOLUTION_PROJECT='' RESOLUTION_REPOSITORY=''
+RESOLUTION_PROJECT_DIR='' RESOLUTION_TARGET_BRANCH=''
+RESOLUTION_TICKET_DIGEST='' RESOLUTION_CANDIDATE_DIGEST=''
+RESOLUTION_METADATA_DIGEST='' RESOLUTION_EVIDENCE='' RESOLUTION_UPDATED_AT=''
+READER_TICKET_DIGEST='' READER_EVIDENCE_FILE='' CANDIDATE_METADATA_DIGEST=''
+
+mkdir -p "$TICKET_ROOT" || die "could not create workflow state root"
+if ! fm_lock_try_acquire "$RESOLUTION_LOCK"; then
+  refuse "another runner is resolving $TICKET"
+fi
+trap 'fm_lock_release "$RESOLUTION_LOCK" || true' EXIT INT TERM
+resolve_project
+resolution_status=$?
+fm_lock_release "$RESOLUTION_LOCK" || true
+trap - EXIT INT TERM
+[ "$resolution_status" -eq 0 ] || exit "$resolution_status"
+
+RUN_KEY=$(printf '%s' "$REPOSITORY" | shasum -a 256 | awk '{print substr($1, 1, 16)}')
+RUN_DIR="$TICKET_ROOT/$RUN_KEY"
+STATE_FILE="$RUN_DIR/state"
+HISTORY_FILE="$RUN_DIR/history.tsv"
 [ -e "$RUN_DIR" ] || mkdir -p "$RUN_DIR" || die "could not create execution directory"
 acquire_lock
 
