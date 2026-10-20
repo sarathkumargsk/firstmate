@@ -48,4 +48,5 @@ In a home with `config/supervision-host` and no `config/supervision-host-off` th
 On native Windows, the operational-input adapter runs its Bash helper through `bash`; macOS and Linux invoke it directly.
 
 The companion `.opencode/plugins/fm-primary-watch-arm.js` owns normal TUI watcher supervision, wakes it with `client.session.promptAsync`, and coordinates with the guard before a blind-turn follow-up.
+OpenCode 2 runs none of these OpenCode 1 plugin functions; the watch-arm plugin alone also default-exports an OpenCode 2 `setup()`, which arms on the primary session's terminal `session.execution.*` events and queues its wake through `session.prompt`.
 The PreToolUse-equivalent watcher-arm seatbelt blocks by throwing from `tool.execute.before`.

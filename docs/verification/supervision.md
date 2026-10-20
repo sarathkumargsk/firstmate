@@ -570,6 +570,24 @@ ok - Pi 0.86.1 live E2E covered repeated successor handoffs and a genuine stoppe
 
 The test observed three consecutive actionable notifications, each with a ledger-linked successor before model handling, then replaced the isolated lab's arm command with an intentional failure, stopped that lab's live arm chain, and confirmed the guard still emitted `WATCHER DOWN - SUPERVISION IS OFF` after the bounded grace period.
 
+OpenCode 2 runs no OpenCode 1 plugin function, publishes every location's session events on one server-wide stream, and ends a turn with `session.execution.succeeded`, `failed`, or `interrupted` instead of `session.idle`.
+OpenCode 2.0.25 and 2.0.32 each exercised the watch-arm plugin's OpenCode 2 entrypoint on 2026-10-20 against a private server with its own database, with sessions pinned to a model no provider serves so no model call was made:
+
+```sh
+tests/fm-opencode-v2-watch-arm-live.test.sh
+```
+
+Observed output on 2.0.32, with 2.0.25 printing the same four lines under its own version:
+
+```text
+ok - opencode v2.0.32 reports the watch-arm plugin active
+ok - opencode v2.0.32: a foreign project's turn end does not arm
+ok - opencode v2.0.32: an ordinary wake starts one verified successor before the prompt is delivered
+ok - opencode v2.0.32: a later turn end keeps exactly one live cycle
+```
+
+The guard spends no model tokens, so it runs by default wherever OpenCode 2 is installed and skips explicitly on OpenCode 1; rerun it after every OpenCode upgrade.
+
 Pi same-process session-transition ownership was verified on 2026-09-01 against the tracked extension with provider-free public lifecycle events, retained and fresh extension-module rebinds, and real arm children:
 
 ```sh

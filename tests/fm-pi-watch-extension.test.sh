@@ -5318,6 +5318,160 @@ EOF
   pass "OpenCode healthy arm output does not suppress the turn-end guard"
 }
 
+# OpenCode 2 runs no V1 plugin function: it loads the default export's setup()
+# and publishes every location's session events on one shared stream, with
+# terminal session.execution.* events in place of session.idle. The driver
+# plays that host: a foreign location's session and a subagent session must
+# never arm, a primary turn end arms one cycle, its actionable close starts one
+# verified successor before the queued wake prompt is delivered, a duplicate
+# turn end does not start a second cycle, and cleanup ends the subscription.
+test_opencode_v2_entrypoint_arms_and_rearms_the_primary_session_only() {
+  local plugin repo other worker home log stop out status
+  plugin="$ROOT/.opencode/plugins/fm-primary-watch-arm.js"
+  repo="$TMP_ROOT/opencode-v2-root"
+  other="$TMP_ROOT/opencode-v2-other-project"
+  worker="$TMP_ROOT/opencode-v2-worker-root"
+  home="$TMP_ROOT/opencode-v2-home"
+  log="$TMP_ROOT/opencode-v2.log"
+  stop="$TMP_ROOT/opencode-v2.stop"
+  mkdir -p "$repo/bin" "$other" "$worker" "$home/state" "$home/config"
+  git init -q "$repo"
+  git init -q "$other"
+  git init -q "$worker"
+  : > "$repo/AGENTS.md"
+  cp "$ROOT/bin/fm-supervision-lib.sh" "$ROOT/bin/fm-operational-input.sh" "$repo/bin/"
+  : > "$home/state/task.meta"
+  cat > "$repo/bin/fm-watch-arm.sh" <<'SH'
+#!/usr/bin/env bash
+if [ "${1:-}" = --handling-delivered ]; then
+  printf 'confirmed generation=%s watcher=%s\n' "$2" "$4" >> "${FM_ARM_LOG:?}"
+  exit 0
+fi
+printf 'arm=%s predecessor=%s\n' "$$" "${FM_WATCH_PREDECESSOR_ARM_PID:-none}" >> "${FM_ARM_LOG:?}"
+if [ "$(grep -c '^arm=' "$FM_ARM_LOG")" -eq 1 ]; then
+  printf 'watcher: started pid=%s (beacon fresh)\n' "$$"
+  sleep 0.2
+  printf 'signal: v2 original wake\n'
+  exit 0
+fi
+printf 'watcher: started pid=%s (beacon fresh) recovery-generation=v2-generation\n' "$$"
+trap 'exit 0' TERM INT
+while [ ! -e "$FM_STOP_FILE" ]; do sleep 0.02; done
+SH
+  chmod +x "$repo/bin/fm-watch-arm.sh"
+  out=$(PLUGIN="$plugin" REPO="$repo" OTHER="$other" WORKER="$worker" FM_HOME="$home" FM_ARM_LOG="$log" \
+    FM_STOP_FILE="$stop" node 2>&1 <<'EOF'
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const rows = () => (existsSync(process.env.FM_ARM_LOG) ? readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n") : []);
+const arms = () => rows().filter((row) => row.startsWith("arm="));
+
+function fakeHost(directory, sessions) {
+  const prompts = [];
+  const pending = [];
+  let wake = null;
+  let subscriptions = 0;
+  let aborted = false;
+  const ctx = {
+    location: { directory },
+    event: {
+      async *subscribe({ signal }) {
+        subscriptions += 1;
+        signal.addEventListener("abort", () => {
+          aborted = true;
+          wake?.();
+        });
+        while (!signal.aborted) {
+          if (pending.length > 0) {
+            yield pending.shift();
+            continue;
+          }
+          await new Promise((resolve) => {
+            wake = resolve;
+          });
+        }
+      },
+    },
+    session: {
+      get: async ({ sessionID }) => {
+        if (!sessions[sessionID]) throw new Error(`unknown session ${sessionID}`);
+        return sessions[sessionID];
+      },
+      prompt: async (input) => {
+        prompts.push(input);
+      },
+    },
+  };
+  const emit = (type, sessionID) => {
+    pending.push({ type, data: { sessionID } });
+    wake?.();
+  };
+  return { ctx, emit, prompts, subscriptions: () => subscriptions, aborted: () => aborted };
+}
+
+const mod = await import(pathToFileURL(process.env.PLUGIN).href);
+const plugin = mod.default;
+if (typeof plugin?.id !== "string" || typeof plugin.setup !== "function" || typeof plugin.server !== "function") {
+  throw new Error("the default export must carry an id, a V2 setup(), and the V1 server()");
+}
+
+const worker = fakeHost(process.env.WORKER, {});
+if ((await plugin.setup(worker.ctx)) !== undefined || worker.subscriptions() !== 0) {
+  throw new Error("a non-primary location must not subscribe to the shared event stream");
+}
+
+const host = fakeHost(process.env.REPO, {
+  primary: { id: "primary", location: { directory: process.env.REPO } },
+  subagent: { id: "subagent", parentID: "primary", location: { directory: process.env.REPO } },
+  foreign: { id: "foreign", location: { directory: process.env.OTHER } },
+});
+const cleanup = await plugin.setup(host.ctx);
+writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
+if (typeof cleanup !== "function") throw new Error("setup must return a cleanup function on the primary root");
+
+host.emit("session.execution.succeeded", "foreign");
+host.emit("session.execution.failed", "subagent");
+host.emit("session.execution.interrupted", "missing");
+await sleep(400);
+if (arms().length !== 0) throw new Error(`a non-primary session armed: ${rows().join(" | ")}`);
+
+host.emit("session.execution.succeeded", "primary");
+host.emit("session.execution.succeeded", "primary");
+for (let i = 0; i < 400 && host.prompts.length < 1; i += 1) await sleep(10);
+if (host.prompts.length !== 1) throw new Error(`expected one wake prompt, got ${host.prompts.length}: ${rows().join(" | ")}`);
+const [first, successor] = arms();
+if (arms().length !== 2 || !first || !successor) throw new Error(`expected one cycle and one successor: ${rows().join(" | ")}`);
+if (successor.replace(/.*predecessor=/, "") !== first.replace(/^arm=([0-9]+).*/, "$1")) {
+  throw new Error(`the successor did not name the closed cycle as predecessor: ${rows().join(" | ")}`);
+}
+const successorPid = successor.replace(/^arm=([0-9]+).*/, "$1");
+if (!rows().includes(`confirmed generation=v2-generation watcher=${successorPid}`)) {
+  throw new Error(`the handling handoff was not confirmed against the successor cycle: ${rows().join(" | ")}`);
+}
+const prompt = host.prompts[0];
+if (prompt.sessionID !== "primary" || prompt.delivery !== "queue" || !prompt.text.includes("signal: v2 original wake")) {
+  throw new Error(`unexpected wake prompt: ${JSON.stringify(prompt)}`);
+}
+
+host.emit("session.execution.succeeded", "primary");
+await sleep(400);
+if (arms().length !== 2) throw new Error(`a duplicate turn end started another cycle: ${rows().join(" | ")}`);
+
+await cleanup();
+for (let i = 0; i < 100 && !host.aborted(); i += 1) await sleep(10);
+writeFileSync(process.env.FM_STOP_FILE, "stop\n");
+if (!host.aborted()) throw new Error("cleanup must end the event subscription");
+process.exit(0);
+EOF
+  )
+  status=$?
+  [ "$status" -eq 0 ] || fail "OpenCode 2 entrypoint must arm and rearm only the primary session: $out"
+  [ -z "$out" ] || fail "OpenCode 2 entrypoint test printed output: $out"
+  pass "OpenCode 2 entrypoint arms on a primary turn end, rearms once after a wake, and ignores other sessions"
+}
+
 # Both OpenCode plugin writes to a child's stdin can fail with EPIPE, because
 # the child is free to exit without reading. An unhandled stdin error is a
 # thrown 'error' event that takes the whole host process down with it. Here the
@@ -5433,3 +5587,4 @@ test_opencode_actionable_close_rechecks_session_lock
 test_opencode_watch_arm_coordinates_with_turnend_guard
 test_opencode_healthy_arm_output_does_not_suppress_guard
 test_opencode_turnend_guard_survives_an_encoder_that_never_reads_stdin
+test_opencode_v2_entrypoint_arms_and_rearms_the_primary_session_only
