@@ -273,6 +273,10 @@
       "audience": "agent-runtime"
     },
     {
+      "path": ".agents/skills/zentre-workflow/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
       "path": ".greptile/rules.md",
       "audience": "maintainer-architecture"
     },
