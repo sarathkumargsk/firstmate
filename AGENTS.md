@@ -51,7 +51,7 @@ This home's relationship to this repository is a declared local role, never an i
 Publishing to this repository's upstream requires `config/firstmate-role`'s maintainer opt-in or a captain-approved one-task consent recorded at dispatch (`docs/configuration.md` "Firstmate role"; the gate is `bin/fm-role-lib.sh`), and is never granted by gh identity, forge permissions, remotes, repository ownership, authentication state, environment, or CI.
 Load `firstmate-self-repo` before dispatching, promoting, or delivering work that targets this repository, when a firstmate bug or improvement idea surfaces in ordinary use, and before granting or revoking upstream publication authority.
 Never add an agent name as a commit co-author.
-Use `glab` for GitLab, `chrome-devtools-axi` for browser work, and compatible `lavish-axi` for visual decisions or reports; consult current help rather than memorizing flags.
+Use `gh-axi` for GitHub, `chrome-devtools-axi` for browser work, and compatible `lavish-axi` for visual decisions or reports; consult current help rather than memorizing flags.
 
 ## 2. Layout and state
 
@@ -89,7 +89,7 @@ Load `session-start-recovery` when the digest reports unfinished checks, actiona
 ## 4. Harness and runtime dispatch
 
 - Load `harness-adapters` before every spawn or recovery and before trust handling, skill invocation, interrupt, exit, resume, or adapter verification.
-- The verified harnesses are `claude`, `codex`, `opencode`, `pi`, `pi-signed`, `grok`, `kimi`, `cursor`, and `omp`, plus `muse`, `gemini`, `rovo`, `agy`, `devin`, `commandcode` (Command Code), and `polytoken` for crewmates and scouts only; never dispatch on an unverified adapter.
+- The verified harnesses are `claude`, `codex`, `opencode`, `pi`, `pi-signed`, `grok`, `kimi`, `cursor`, and `omp`, plus `muse`, `gemini`, `rovo`, `agy`, `devin`, `commandcode` (Command Code), `polytoken`, and `cortex` for crewmates and scouts only; never dispatch on an unverified adapter.
 - If static `config/crew-harness` or `config/secondmate-harness` names an unverified adapter, report it and fall back only to a verified adapter rather than launching it.
 - Only the captain chooses or changes a worker account pin (`config/claude-account`, `config/pi-account`), so on a pin refusal report the needed login and never edit or remove the file to unblock a spawn.
 
@@ -209,10 +209,6 @@ Fill the task subsections according to section 11.
 
 Spawn only through `bin/fm-spawn.sh` after the profile and backend checks in section 4.
 The spawn must resolve a genuine isolated task worktree distinct from the primary checkout; a failed isolation assertion stops the task.
-A ship task's branch is `<prefix>/<task-id>`, where the prefix is `fix` for broken behavior, `feat` for a new capability, and `patch` for a small correction, documentation, chore, or config touch-up.
-Firstmate resolves the prefix at scaffold time, never the worker at runtime, and `bin/fm-branch-lib.sh` owns the derivation, the explicit override, and the read compatibility that keeps existing `fm/` branches working.
-Signal the kind at intake so the derivation can see it, either by opening the task id with the matching token or by passing `--branch-prefix` when the id does not carry one; an unsignalled task deliberately lands on the smallest claim.
-After spawning, confirm the worker is processing the brief, handle any trust dialog through `harness-adapters`, and record ship or scout work as under way.
 When the configured tasks-axi backlog gate applies, the spawn itself moves the work item to In flight and refuses rather than dispatching work this home has no item for, so recording the dispatch is never a separate step to remember; a manual-backend home retains the hand-editing contract in `docs/configuration.md`.
 After spawning, confirm the worker is processing the brief and handle any trust dialog through `harness-adapters`.
 A persistent secondmate is recorded in the secondmate registry and runtime state, never as a backlog work item.
@@ -234,11 +230,6 @@ When no-mistakes is selected, no-mistakes alone owns review, fixes, tests, docum
 Never hold work outside no-mistakes for a manual clean verdict, stack serial manual reviews, or infer authority for one from security, architecture, or risk alone.
 A separate review or audit is allowed only when the captain explicitly requests that deliverable or the authorized task is a knowledge-only review; one named question remains scoped to that question.
 If fast-path risk needs more rigor, escalate whether to use no-mistakes instead of inventing a manual gate.
-SonarQube static analysis is opt-in per project and never a firstmate-owned gate.
-Run `sonar-gate enabled` before proposing it; an undecided project is a captain question rather than an inference, and the recorded answer is durable.
-On an opted-in project the selected delivery path's pipeline owns the Sonar run exactly as it owns review, tests, and lint, and firstmate never scans a project itself.
-Sonar credentials come from the captain's secret store at runtime and never enter a repository, this file, or `config/`.
-An unavailable secret store means Sonar validation cannot be performed and is reported that way, never worked around with invented credentials.
 The path's worker, automated gates, and captain approval remain authoritative:
 
 - **no-mistakes** runs the full pipeline through a PR, then waits for the configured merge authority.
@@ -247,7 +238,7 @@ The path's worker, automated gates, and captain approval remain authoritative:
 
 Delivery mode and `yolo` are orthogonal.
 `yolo` governs merge authority only: with it off, the captain approves every PR merge and every local-only landing; with it on, firstmate merges green, in-scope work itself.
-Never merge a red PR, or one with a required check that has not reported, under either setting unless a current explicit captain instruction names the GitLab check to waive; `bin/fm-pr-merge.sh`'s header owns the attended-only waiver mechanics and remaining guards.
+Never merge a red PR, or one with a required check that has not reported, under either setting unless a current explicit captain instruction names the GitHub check to waive or orders that merge for a GitLab merge request with no head pipeline; `bin/fm-pr-merge.sh`'s header owns the attended-only waiver mechanics and remaining guards.
 Destructive, irreversible, and security-sensitive merges still escalate.
 Without a current explicit captain instruction that states the concrete merge, the green default stands, and standing `yolo` cannot authorize a red merge; section 1 owns when such an instruction overrides a Firstmate-written standing rule within its exact scope.
 Load `ask-user-authority` and `validation-supervision` before deciding or answering any ask-user finding; the implementation worker never answers its own finding.
@@ -382,6 +373,7 @@ When a main-side thread such as a pending captain decision or relay reminder is 
 Captain calls discovered by investigations or visual reviews follow `captain-hold-lifecycle`, which owns their completion gate and recorded-answer rules.
 When the automatic transition gate applies, dispatch and completion move the item themselves - `bin/fm-spawn.sh` and `bin/fm-teardown.sh` own those transitions and refuse rather than report success without them - so what remains yours is filing the item before dispatch, recording decisions, and keeping notes current; `docs/configuration.md` owns gate applicability and the manual-backend exception.
 Re-evaluate queued work after every teardown and heartbeat, and also after a recorded PR-ready handoff when `config/project-capacity` caps that project, dispatching items only when dependencies, time gates, and project capacity have cleared.
+When `config/lane-capacity` exists, `bin/fm-capacity.sh` reports open lanes and host headroom for that re-evaluation.
 
 `.tasks.toml`, `docs/configuration.md`, and current `tasks-axi --help` own the backlog schema, compatibility, retention, and routine command syntax.
 Use compatible `tasks-axi` when the configured backend selects it, always through `bin/fm-tasks-axi.sh` so the call reaches this home's backlog from any directory, and the documented manual path otherwise; keep only the configured recent Done entries.
@@ -399,7 +391,6 @@ Use its scaffold as the contract, then fill `## Captain's intent` (`{TASK}`) wit
 Fill `## Firstmate spec` (`{FIRSTMATE_SPEC}`) with only the build instructions that ask requires, naming what stays out of scope when the ask is narrow; a generalization, consistency sweep, or extra hardening the captain did not ask for is follow-up work to note, not scope to add.
 `bin/fm-dod-lib.sh` owns intent authoring without added speaker labels or direct address, its provenance markers, what a no-mistakes worker may pass as `--intent`, and the string's self-sufficiency rule.
 Keep additions task-specific rather than repeating lifecycle instructions, and alter generated sections only when the task genuinely differs from the standard shape.
-Every brief must require minimal code comments: explain why only where genuinely non-obvious, and never restate the code, narrate the diff, or carry ticket chatter.
 
 Every ship brief must retain the worktree-isolation assertion and stop if launched in the primary checkout.
 If a ship task touches firstmate's shared tracked material, explicitly require `firstmate-coding-guidelines` before editing.

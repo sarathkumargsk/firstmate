@@ -2,6 +2,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { resolve } from "node:path";
 import { encodeFirstmateOperationalInput } from "./lib/fm-operational-input.js";
+import { contextDirectory, createTurnEndLatch, promptSession, setupEventSubscription } from "./lib/fm-opencode2.js";
 
 // Supervision host: a home opted in with config/supervision-host
 // (docs/configuration.md "Supervision host" owns the gate, which
@@ -27,20 +28,8 @@ const ARM_RETIRE_TIMEOUT_MS = positiveInteger("FM_WATCH_ARM_RETIRE_TIMEOUT_MS", 
 const REARM_RETRY_BASE_MS = positiveInteger("FM_WATCH_REARM_RETRY_BASE_MS", 250);
 const REARM_RETRY_MAX_MS = positiveInteger("FM_WATCH_REARM_RETRY_MAX_MS", 4000);
 const REARM_RETRY_LIMIT = positiveInteger("FM_WATCH_REARM_RETRY_LIMIT", 5);
-// OpenCode 2 publishes no session.idle; a turn ends with one of these.
-const TURN_END_EVENTS = new Set([
-  "session.idle",
-  "session.execution.succeeded",
-  "session.execution.failed",
-  "session.execution.interrupted",
-]);
-const SUBSCRIBE_RETRY_MS = 1000;
 
 let child = null;
-// OpenCode 2 evaluates this module once per server process and calls setup
-// once per location; every instance shares the singleton state above.
-let liveSetups = 0;
-let disposed = false;
 let armStatus = "idle";
 let retryTimer = null;
 let retryFailures = 0;
@@ -278,18 +267,7 @@ function observeArmOutput(hostMode, stdout, stderr, settleReadiness) {
 
 async function sendPrompt(paths, client, sessionID, text) {
   const encoded = await encodeFirstmateOperationalInput(paths.root, "watcher", text);
-  if (typeof client.session.promptAsync === "function") {
-    await client.session.promptAsync({
-      path: { id: sessionID },
-      body: {
-        parts: [{ type: "text", text: encoded }],
-      },
-    });
-    return;
-  }
-  // OpenCode 2: "queue" waits for a running turn instead of steering it, as
-  // the OpenCode 1 prompt queue did.
-  await client.session.prompt({ sessionID, text: encoded, delivery: "queue" });
+  await promptSession(client?.__ctx, client?.session ? client : null, sessionID, encoded);
 }
 
 function confirmHandlingDelivery(paths, recovery) {
@@ -491,12 +469,6 @@ function spawnArm(paths, sessionID, client, predecessorArmPid = "") {
     settled = true;
     resolveClosed();
     releaseChild();
-    // An unloaded module must not compete with its reloaded successor; the
-    // successor's --restart arm resurfaces any durable wake this one held.
-    if (disposed) {
-      settleReadiness("failed");
-      return;
-    }
     const classification = classifyArmClose(paths, hostMode, stdout, stderr, code, signal);
     settleReadiness(classification.kind === "actionable" ? "wake" : "failed");
     const predecessor = String(armChild.pid ?? "");
@@ -536,7 +508,6 @@ function spawnArm(paths, sessionID, client, predecessorArmPid = "") {
     resolveClosed();
     releaseChild();
     settleReadiness("failed");
-    if (disposed) return;
     if (restorationInFlight) {
       setArmStatus("failed");
       return;
@@ -553,7 +524,7 @@ function spawnArm(paths, sessionID, client, predecessorArmPid = "") {
 }
 
 async function beginArm(paths, sessionID, client, predecessorArmPid) {
-  if (!sessionID || disposed) return { status: "skipped", armChild: null };
+  if (!sessionID) return { status: "skipped", armChild: null };
   if (!(await isPrimaryRoot(paths.root, paths.home))) return { status: "not-primary", armChild: null };
   if (!(await sessionOwnsLock(paths))) return { status: "read-only", armChild: null };
   if (child) return { status: "existing", armChild: child };
@@ -603,62 +574,27 @@ export const FmPrimaryWatchArm = async ({ client, directory, worktree }) => {
   };
 };
 
-// One OpenCode 2 server hosts every location, so its event stream carries
-// other projects' sessions; only a top-level session of this root may arm.
-async function primarySession(ctx, sessionID, root) {
-  let session;
-  try {
-    session = await ctx.session.get({ sessionID });
-  } catch {
-    return false;
-  }
-  if (!session || session.parentID) return false;
-  const directory = session.location?.directory;
-  if (!directory) return false;
-  return (await resolveRoot(directory)) === root;
+function installWatchArm(ctx) {
+  const anchor = contextDirectory(ctx);
+  const transport = { __ctx: ctx };
+  let pathsPromise = null;
+  const getPaths = () => (pathsPromise ??= resolveRoot(anchor).then(effectivePaths));
+  globalThis[COORDINATOR_KEY] = {
+    ensureArmed: async (sessionID, activeClient) => ensureArm(await getPaths(), sessionID, activeClient ?? transport),
+  };
+
+  const latch = createTurnEndLatch();
+  setupEventSubscription(ctx, async (event) => {
+    const sessionID = latch(event);
+    if (!sessionID) return;
+    void ensureArm(await getPaths(), sessionID, transport);
+  });
 }
 
-async function watchTurnEnds(ctx, root, paths, signal) {
-  while (!signal.aborted) {
-    try {
-      for await (const event of ctx.event.subscribe({ signal })) {
-        if (!TURN_END_EVENTS.has(event.type)) continue;
-        const sessionID = event.data?.sessionID;
-        if (!sessionID || !(await primarySession(ctx, sessionID, root))) continue;
-        void ensureArm(paths, sessionID, ctx);
-      }
-    } catch {
-      // A dropped stream is resubscribed below.
-    }
-    if (signal.aborted) return;
-    await new Promise((resolveWait) => {
-      const timer = setTimeout(resolveWait, SUBSCRIBE_RETRY_MS);
-      timer.unref();
-    });
-  }
-}
-
-// OpenCode 2 reads the default export's id and setup(); OpenCode 1 calls its
-// server(). Plugin.define is the identity, and importing @opencode/plugin would
-// keep OpenCode 1 from loading this file at all.
 export default {
-  id: "firstmate.primary-watch-arm",
+  id: "fm.primary.watch-arm",
   server: FmPrimaryWatchArm,
-  async setup(ctx) {
-    const root = await resolveRoot(ctx.location.directory);
-    const paths = effectivePaths(root);
-    if (!(await isPrimaryRoot(paths.root, paths.home))) return undefined;
-    globalThis[COORDINATOR_KEY] = {
-      ensureArmed: (sessionID, activeClient) => ensureArm(paths, sessionID, activeClient ?? ctx),
-    };
-    liveSetups += 1;
-    disposed = false;
-    const controller = new AbortController();
-    void watchTurnEnds(ctx, root, paths, controller.signal);
-    return () => {
-      controller.abort();
-      liveSetups -= 1;
-      if (liveSetups === 0) disposed = true;
-    };
+  setup(ctx) {
+    installWatchArm(ctx);
   },
 };

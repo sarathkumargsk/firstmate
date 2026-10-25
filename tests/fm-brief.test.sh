@@ -1075,6 +1075,8 @@ test_ship_and_scout_teach_validation_round_pause() {
       "$kind brief's Waiting section does not declare the validation round once and then hold it"
     assert_no_grep "is not a \`paused:\` wait" "$brief" \
       "$kind brief still tells workers never to declare a wait they hold in a command"
+    assert_no_grep "heavy-test slot" "$brief" \
+      "$kind brief names a heavy-test slot that nothing defines"
     assert_grep "your own validation round" "$brief" \
       "$kind brief did not teach workers to declare their validation-round wait"
     assert_grep 'Before ending your turn with your own background shell or monitor still running' "$brief" \
@@ -1219,6 +1221,37 @@ ROWS
   pass "fm-brief.sh: the branch prefix is derived from the task id and explicitly overridable"
 }
 
+# Contract: the inbox listing the brief tells a worker to run succeeds silently
+# on an empty or absent inbox and lists messages in numeric order, in bash and zsh.
+test_inbox_listing_command_is_safe_on_empty_inbox() {
+  local home brief cmd inbox shell_name out status
+  home="$TMP_ROOT/inbox-listing-home"
+  mkdir -p "$home/data" "$home/config"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" brief-inbox-list some-proj --mode no-mistakes >/dev/null 2>&1 \
+    || fail "fm-brief.sh ship scaffold exited non-zero"
+  brief="$home/data/brief-inbox-list/brief.md"
+  # shellcheck disable=SC2016
+  cmd=$(sed -n 's/.*list them with `\(find [^`]*\)`.*/\1/p' "$brief" | head -1)
+  [ -n "$cmd" ] || fail "the brief does not give a find-based inbox listing command"
+  inbox="$home/state/brief-inbox-list.inbox"
+  for shell_name in bash zsh; do
+    command -v "$shell_name" >/dev/null 2>&1 || continue
+    rm -rf "$inbox"
+    status=0
+    out=$("$shell_name" -c "$cmd" 2>&1) || status=$?
+    [ "$status" -eq 0 ] && [ -z "$out" ] || fail "$shell_name: absent inbox listing was not silent success (exit $status): $out"
+    mkdir -p "$inbox"
+    status=0
+    out=$("$shell_name" -c "$cmd" 2>&1) || status=$?
+    [ "$status" -eq 0 ] && [ -z "$out" ] || fail "$shell_name: empty inbox listing was not silent success (exit $status): $out"
+    : > "$inbox/1000.msg"
+    : > "$inbox/999.msg"
+    out=$("$shell_name" -c "$cmd" 2>&1 | sed 's#.*/##' | tr '\n' ' ')
+    [ "$out" = "999.msg 1000.msg " ] || fail "$shell_name: messages not listed in numeric order: $out"
+  done
+  pass "fm-brief: inbox listing is silent on empty/absent inbox and numerically ordered"
+}
+
 # Contract: a waiting worker spends no turns. A decision wait ends the turn, an
 # external wait sleeps in one bounded blocking shell command sized per harness,
 # and a waiting worker neither polls its inbox nor polls a pipeline between holds.
@@ -1279,6 +1312,35 @@ test_wait_no_turns_absent_keeps_the_previous_brief() {
   assert_no_grep "issue the same foreground call again" "$brief" \
     "an absent flag still asked for the foreground reattach"
   pass "fm-brief: without config/wait-no-turns the brief and drive text stay as they were"
+}
+
+test_inbox_guidance_explains_marked_body_terminator() {
+  local home brief kind id
+  home="$TMP_ROOT/inbox-guidance"
+  for kind in no-mistakes scout secondmate; do
+    id="inbox-$kind"
+    case "$kind" in
+      no-mistakes)
+        FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode no-mistakes >/dev/null \
+          || fail "ship scaffold failed"
+        ;;
+      scout)
+        FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --scout >/dev/null \
+          || fail "scout scaffold failed"
+        ;;
+      secondmate)
+        FM_HOME="$home" FM_SECONDMATE_CHARTER='Supervise assigned work.' \
+          "$ROOT/bin/fm-brief.sh" "$id" --secondmate --no-projects >/dev/null \
+          || fail "secondmate scaffold failed"
+        ;;
+    esac
+    brief="$home/data/$id/brief.md"
+    assert_grep 'fm_task_inbox_body' "$brief" "$kind scaffold omitted the format-aware inbox reader"
+    assert_grep 'body-terminator=1' "$brief" "$kind scaffold omitted the body terminator marker"
+    assert_grep 'not part of the logical message body' "$brief" "$kind scaffold omitted the synthetic terminator meaning"
+    assert_grep 'preserve any intentional trailing newlines' "$brief" "$kind scaffold omitted trailing-newline preservation"
+  done
+  pass "fm-brief: inbox guidance explains marked synthetic terminators in every scaffold"
 }
 
 test_worker_role_scope() {
@@ -1636,6 +1698,13 @@ test_crewmate_scaffolds_forbid_pool_administration() {
   [ "$ship_rule" = "$scout_rule" ] \
     || fail "ship and scout shared-infrastructure rules have drifted apart"
 
+  ship_cd_rule=$(awk '/^8\. Never start a shell command with/,/^$/' "$home/data/brief-pool-no-mistakes/brief.md")
+  scout_cd_rule=$(awk '/^8\. Never start a shell command with/,/^$/' "$brief")
+  [ -n "$ship_cd_rule" ] || fail "ship brief emitted no leading-cd rule"
+  [ "$ship_cd_rule" = "$scout_cd_rule" ] \
+    || fail "scout brief leading-cd rule is missing or differs from the ship brief"
+  assert_grep "every sub-agent you launch" "$brief" "scout brief did not pass the leading-cd rule to sub-agents"
+
   # The daemon half of the rule survived the fold.
   assert_grep "no-mistakes" "$brief" "scout brief lost the shared no-mistakes daemon rule"
   # shellcheck disable=SC2016 # Literal backticks and braces must remain unexpanded.
@@ -1684,8 +1753,10 @@ test_ship_and_scout_teach_validation_round_pause
 test_scout_and_secondmate_load_decision_hold_policy
 test_scout_and_secondmate_scaffold
 test_scout_lavish_line_follows_presentation_floor
+test_inbox_listing_command_is_safe_on_empty_inbox
 test_workers_wait_without_spending_turns
 test_wait_no_turns_absent_keeps_the_previous_brief
+test_inbox_guidance_explains_marked_body_terminator
 test_home_brief_include_is_appended_last
 test_base_branch_is_rendered_and_bounded
 test_ship_branch_prefix_defaults_to_derived_prefix
