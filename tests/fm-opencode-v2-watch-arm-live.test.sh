@@ -3,8 +3,9 @@
 # private server with its own database. OpenCode 2 must report the plugin
 # active, a turn end in a foreign project must not arm, a primary turn end must
 # arm one cycle whose ordinary wake starts one verified successor before the
-# wake prompt reaches the session, and a later turn end must not start another
-# cycle. Sessions pin a model no provider serves, so no model call is made.
+# wake prompt reaches the primary session and never the foreign one, and a
+# later turn end must not start another cycle. Sessions pin a model no provider
+# serves, so no model call is made.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -50,7 +51,7 @@ git init -q "$OTHER"
 : > "$PRIMARY/AGENTS.md"
 cp "$ROOT/bin/fm-supervision-lib.sh" "$ROOT/bin/fm-operational-input.sh" "$PRIMARY/bin/"
 cp "$ROOT/.opencode/plugins/fm-primary-watch-arm.js" "$ROOT/.opencode/plugins/package.json" "$PRIMARY/.opencode/plugins/"
-cp "$ROOT/.opencode/plugins/lib/fm-operational-input.js" "$PRIMARY/.opencode/plugins/lib/"
+cp "$ROOT/.opencode/plugins/lib/fm-operational-input.js" "$ROOT/.opencode/plugins/lib/fm-opencode2.js" "$PRIMARY/.opencode/plugins/lib/"
 : > "$HOME_DIR/state/task.meta"
 cat > "$PRIMARY/bin/fm-watch-arm.sh" <<'SH'
 #!/usr/bin/env bash
@@ -90,6 +91,7 @@ printf '%s\n' "$SERVER_PID" > "$HOME_DIR/state/.lock"
 
 api() { opencode api --server "$URL" "$@"; }
 plugin_state() {  # <directory>
+  # shellcheck disable=SC2016 # the template literal belongs to node, not the shell.
   api plugin.list --param "location.directory=$1" | node -e '
     let s = "";
     process.stdin.on("data", (c) => (s += c)).on("end", () => {
@@ -115,7 +117,7 @@ arm_count() { grep -c '^arm=' "$LOG" 2>/dev/null || printf '0\n'; }
 
 for dir in "$PRIMARY" "$ROOT"; do
   state=$(wait_plugin_state "$dir")
-  [ "$state" = "firstmate.primary-watch-arm active" ] || failed "the watch-arm plugin is not active in $dir: $state"
+  [ "$state" = "fm.primary.watch-arm active" ] || failed "the watch-arm plugin is not active in $dir: $state"
 done
 pass "$OPENCODE_VERSION reports the watch-arm plugin active"
 
@@ -143,6 +145,8 @@ for _ in $(seq 1 50); do
   sleep 0.2
 done
 [ "${delivered:-0}" -ge 1 ] || failed "the wake prompt did not reach the primary session"
+leaked=$(api session.context --param "sessionID=$foreign" 2>/dev/null | grep -c 'live ordinary wake' || true)
+[ "${leaked:-0}" = 0 ] || failed "the wake prompt reached the foreign session"
 pass "$OPENCODE_VERSION: an ordinary wake starts one verified successor before the prompt is delivered"
 
 end_turn "$primary"

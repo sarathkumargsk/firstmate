@@ -1858,7 +1858,7 @@ test_opencode_arm_plugin_decides_with_the_shared_predicate() {
   local driver case_name dir state config out status
   driver="$TMP_ROOT/arm-decision-driver.mjs"
   cat > "$driver" <<'EOF'
-import { existsSync, writeFileSync } from "node:fs";
+import { existsSync, realpathSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 
@@ -1910,7 +1910,7 @@ const mod = await import(pathToFileURL(process.env.PLUGIN).href);
 const client = { session: { promptAsync: async () => {} } };
 await mod.FmPrimaryWatchArm({ client, directory: process.env.WORKTREE, worktree: process.env.WORKTREE });
 writeFileSync(`${state}/.lock`, `${process.pid}\n`);
-const status = await globalThis.__firstmateOpenCodeWatchArm.ensureArmed("session-test", client);
+const status = await globalThis.__firstmateOpenCodeWatchArms.get(realpathSync(process.env.WORKTREE)).ensureArmed("session-test", client);
 if (expected === "no-arm") {
   if (status !== "not-needed") {
     console.error(`expected a not-needed decline, got ${status}`);

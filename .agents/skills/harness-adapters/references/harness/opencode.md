@@ -47,6 +47,7 @@ OpenCode 2 requires local plugins to export a default definition with an `id` an
 The port also keeps the legacy OpenCode 1 `server` export for older adapters.
 Each primary plugin carries both exports rather than being gated at load time, so OpenCode 1 runs the `server` export and OpenCode 2 runs `setup`.
 Start an OpenCode 2 primary or secondmate home with `opencode --standalone` so its plugins run in the home's own process with its `FM_HOME` and session-lock ancestry, rather than in the shared background service; `bin/fm-spawn.sh` already does this for a `--secondmate` launch.
+Because one OpenCode 2 server streams every location's sessions to every location's plugins, the watch-arm and turn-end guard act only for a top-level session whose own location, read through `ctx.session.get`, resolves to their home's root, and the guard reaches only its own location's watch-arm.
 In a home with `config/supervision-host` and no `config/supervision-host-off` the watch-arm plugin spawns the supervision host instead of `../../../bin/fm-watch-arm.sh`, with Claude's print mode as its headless engine; [`supervision-host.md`](../../../../../docs/supervision-host.md) owns the host.
 `opencode run` can exit before displaying a queued follow-up, so the adapter steps aside in headless mode.
 On native Windows, the operational-input adapter runs its Bash helper through `bash`; macOS and Linux invoke it directly.

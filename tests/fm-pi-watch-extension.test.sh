@@ -5096,7 +5096,10 @@ async function* stream() {
 const ctx = {
   location: { project: { directory: process.env.WORKTREE } },
   event: { subscribe: () => stream() },
-  session: { prompt: async () => {} },
+  session: {
+    get: async ({ sessionID }) => ({ id: sessionID, location: { directory: process.env.WORKTREE } }),
+    prompt: async () => {},
+  },
 };
 writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
 const mod = await import(pathToFileURL(process.env.PLUGIN).href);
@@ -5120,6 +5123,140 @@ EOF
   expect_code 0 "$status" "OpenCode 2 watch plugin must arm on an interrupted turn and ignore shutdown: $out"
   [ -z "$out" ] || fail "OpenCode 2 terminal-event test printed output: $out"
   pass "OpenCode 2 watch plugin arms on an interrupted turn from the project location and ignores shutdown"
+}
+
+# One OpenCode 2 server loads every location's plugins into one process and
+# streams every location's sessions to each of them, while the session lock of
+# every home it serves names that one server process. Two firstmate homes share
+# the process here: a turn end of a worker, child, unplaceable, or other-home
+# session must not arm, guard, or prompt, and a home's own turn end must arm only
+# that home and deliver its wake only to its own session, even when the other
+# home's plugins loaded last. A reload cleans up the old module, which then must
+# not start a successor or deliver a wake of its own.
+test_opencode2_shared_server_supervises_only_its_own_sessions() {
+  local base dir out status
+  base="$TMP_ROOT/opencode2-shared-server"
+  mkdir -p "$base/worker"
+  git init -q "$base/worker"
+  for dir in "$base/home-a" "$base/home-b"; do
+    mkdir -p "$dir/bin" "$dir/state" "$dir/config" "$dir/.opencode/plugins/lib"
+    git init -q "$dir"
+    : > "$dir/AGENTS.md"
+    : > "$dir/state/task.meta"
+    cp "$ROOT/bin/fm-supervision-lib.sh" "$ROOT/bin/fm-operational-input.sh" "$dir/bin/"
+    cp "$ROOT/.opencode/plugins/fm-primary-watch-arm.js" "$ROOT/.opencode/plugins/fm-primary-turnend-guard.js" \
+      "$ROOT/.opencode/plugins/package.json" "$dir/.opencode/plugins/"
+    cp "$ROOT/.opencode/plugins/lib/fm-opencode2.js" "$ROOT/.opencode/plugins/lib/fm-operational-input.js" \
+      "$dir/.opencode/plugins/lib/"
+    cat > "$dir/bin/fm-watch-arm.sh" <<'SH'
+#!/usr/bin/env bash
+log="$FM_ROOT_OVERRIDE/arm.log"
+if [ "${1:-}" = --handling-delivered ]; then
+  printf 'confirmed generation=%s watcher=%s\n' "$2" "$4" >> "$log"
+  exit 0
+fi
+printf 'arm=%s\n' "$$" >> "$log"
+if [ "$(grep -c '^arm=' "$log")" -eq 1 ]; then
+  printf 'watcher: started pid=%s (beacon fresh)\n' "$$"
+  sleep 0.3
+  printf 'signal: ordinary wake\n'
+  exit 0
+fi
+printf 'watcher: started pid=%s (beacon fresh) recovery-generation=shared-generation\n' "$$"
+while [ ! -e "$FM_ROOT_OVERRIDE/stop" ]; do sleep 0.05; done
+printf 'signal: wake after reload\n'
+SH
+    cat > "$dir/bin/fm-turnend-guard.sh" <<'SH'
+#!/usr/bin/env bash
+printf 'guard\n' >> "$(dirname "$0")/../guard.log"
+printf 'guard ran\n' >&2
+exit 2
+SH
+    chmod +x "$dir/bin/fm-watch-arm.sh" "$dir/bin/fm-turnend-guard.sh"
+  done
+  out=$(env -u FM_HOME -u FM_ROOT_OVERRIDE -u FM_STATE_OVERRIDE -u FM_CONFIG_OVERRIDE BASE="$base" node 2>&1 <<'EOF'
+import { existsSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const base = realpathSync(process.env.BASE);
+const homeA = `${base}/home-a`;
+const homeB = `${base}/home-b`;
+const subscribers = [];
+function subscribe() {
+  const queue = [];
+  let wake = null;
+  subscribers.push((event) => { queue.push(event); if (wake) { wake(); wake = null; } });
+  return (async function* () {
+    for (;;) {
+      while (queue.length) yield queue.shift();
+      await new Promise((resolve) => { wake = resolve; });
+    }
+  })();
+}
+const endTurn = (sessionID) => {
+  for (const push of subscribers) push({ type: "session.execution.succeeded", data: { sessionID } });
+};
+const sessions = {
+  "ses-a": { location: { directory: `${homeA}/config` } },
+  "ses-b": { location: { directory: homeB } },
+  "ses-worker": { location: { directory: `${base}/worker` } },
+  "ses-child": { parentID: "ses-a", location: { directory: homeA } },
+};
+const prompts = [];
+const server = {
+  event: { subscribe },
+  session: {
+    get: async ({ sessionID }) => {
+      if (!sessions[sessionID]) throw new Error(`session ${sessionID} not found`);
+      return { id: sessionID, ...sessions[sessionID] };
+    },
+    prompt: async ({ sessionID, text }) => { prompts.push({ sessionID, text }); },
+  },
+};
+const ctxFor = (directory) => ({ ...server, location: { directory, project: { directory } } });
+for (const home of [homeA, homeB]) writeFileSync(`${home}/state/.lock`, `${process.pid}\n`);
+const load = (home, plugin) => import(pathToFileURL(`${home}/.opencode/plugins/${plugin}`).href);
+const disposeA = (await load(homeA, "fm-primary-watch-arm.js")).default.setup(ctxFor(homeA));
+(await load(homeA, "fm-primary-turnend-guard.js")).default.setup(ctxFor(homeA));
+(await load(homeB, "fm-primary-watch-arm.js")).default.setup(ctxFor(homeB));
+(await load(homeB, "fm-primary-turnend-guard.js")).default.setup(ctxFor(homeB));
+const arms = (home) => (existsSync(`${home}/arm.log`) ? readFileSync(`${home}/arm.log`, "utf8").split("\n").filter((line) => line.startsWith("arm=")).length : 0);
+const check = (ok, message) => {
+  if (ok) return;
+  console.error(message);
+  process.exit(1);
+};
+
+for (const sessionID of ["ses-worker", "ses-child", "ses-missing"]) endTurn(sessionID);
+await sleep(1500);
+check(arms(homeA) === 0 && arms(homeB) === 0, "a foreign session's turn end armed a home");
+check(!existsSync(`${homeA}/guard.log`) && !existsSync(`${homeB}/guard.log`), "a foreign session's turn end ran a home's turn-end guard");
+check(prompts.length === 0, `a foreign session was prompted: ${JSON.stringify(prompts)}`);
+
+endTurn("ses-a");
+for (let i = 0; i < 250 && !prompts.some((p) => p.text.includes("ordinary wake")); i += 1) await sleep(20);
+check(prompts.some((p) => p.sessionID === "ses-a" && p.text.includes("ordinary wake")), "the home's wake did not reach its own session");
+check(prompts.every((p) => p.sessionID === "ses-a"), `a wake reached another session: ${JSON.stringify(prompts)}`);
+check(arms(homeA) === 2, `expected one cycle and one successor in the home, got ${arms(homeA)}`);
+check(readFileSync(`${homeA}/arm.log`, "utf8").includes("confirmed generation=shared-generation"), "the handoff was not confirmed against the successor");
+check(arms(homeB) === 0, "the home's own turn end armed the other home");
+check(!existsSync(`${homeA}/guard.log`), "the turn-end guard did not reach its own home's watch arm");
+check(!existsSync(`${homeB}/guard.log`), "the other home's guard ran for this home's session");
+
+const delivered = prompts.length;
+disposeA();
+writeFileSync(`${homeA}/stop`, "");
+await sleep(1500);
+check(arms(homeA) === 2, "an unloaded module started a successor");
+check(prompts.length === delivered, "an unloaded module delivered a wake");
+process.exit(0);
+EOF
+)
+  status=$?
+  expect_code 0 "$status" "OpenCode 2 shared server must supervise each home only through its own sessions: $out"
+  [ -z "$out" ] || fail "OpenCode 2 shared-server test printed output: $out"
+  pass "OpenCode 2 shared server arms, guards, and delivers wakes only for each home's own sessions"
 }
 
 test_opencode2_sessionstart_nudge_prompts_with_flat_session_shape() {
@@ -5313,7 +5450,7 @@ printf 'watcher: healthy pid=1 (beacon 0s)\n'
 SH
   chmod +x "$repo/bin/fm-watch-arm.sh"
   out=$(PLUGIN="$plugin" WORKTREE="$repo" FM_HOME="$home" FM_ARM_LOG="$log" node 2>&1 <<'EOF'
-import { existsSync, writeFileSync } from "node:fs";
+import { existsSync, realpathSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
 const mod = await import(pathToFileURL(process.env.PLUGIN).href);
@@ -5331,7 +5468,7 @@ await hooks.event(event);
 // coordinator rather than waiting a fixed span: refusing an unowned lock walks
 // git and ps probes that can outlast any such span, and the owned-lock event
 // below would then be answered from the refusal instead of arming.
-const refusal = await globalThis.__firstmateOpenCodeWatchArm.ensureArmed("session-test", client);
+const refusal = await globalThis.__firstmateOpenCodeWatchArms.get(realpathSync(process.env.WORKTREE)).ensureArmed("session-test", client);
 if (refusal !== "read-only") {
   console.error(`expected a read-only refusal without the session lock, got ${refusal}`);
   process.exit(1);
@@ -5375,7 +5512,7 @@ printf 'watcher: healthy pid=1 (beacon 0s)\n'
 SH
   chmod +x "$repo/bin/fm-watch-arm.sh"
   out=$(PLUGIN="$plugin" WORKTREE="$repo" FM_HOME="$home" FM_ARM_LOG="$log" node 2>&1 <<'EOF'
-import { existsSync, writeFileSync } from "node:fs";
+import { existsSync, realpathSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
 const mod = await import(pathToFileURL(process.env.PLUGIN).href);
@@ -5386,7 +5523,7 @@ await mod.FmPrimaryWatchArm({
   worktree: process.env.WORKTREE,
 });
 writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
-const status = await globalThis.__firstmateOpenCodeWatchArm.ensureArmed("session-test", client);
+const status = await globalThis.__firstmateOpenCodeWatchArms.get(realpathSync(process.env.WORKTREE)).ensureArmed("session-test", client);
 await new Promise((resolve) => setTimeout(resolve, 120));
 if (status !== "not-primary") {
   console.error(`expected not-primary, got ${status}`);
@@ -6362,6 +6499,7 @@ test_pi_process_exit_cleanup_stops_arm_child
 test_opencode_plugin_package_boundary_is_explicit_esm
 test_opencode_primary_watch_plugin_uses_effective_state_home
 test_opencode2_watch_plugin_arms_on_interrupted_turn_but_not_shutdown
+test_opencode2_shared_server_supervises_only_its_own_sessions
 test_opencode2_sessionstart_nudge_prompts_with_flat_session_shape
 test_opencode2_seatbelts_block_only_the_shell_tool
 test_opencode2_prompt_session_never_resends_after_a_failed_attempt
