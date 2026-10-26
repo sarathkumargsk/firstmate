@@ -1486,6 +1486,37 @@ test_status_and_turn_end_batch_never_uses_churn_evidence() {
   pass "a status-bearing batch never falls through to pane-churn evidence"
 }
 
+test_batched_signal_rows_name_only_their_own_file() {
+  local dir state fakebin out drain_out drain_err pid sequence generation alpha_row beta_row
+  dir=$(make_case batched-signal-row-payloads); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; drain_out="$dir/drain.out"; drain_err="$dir/drain.err"
+  printf 'needs-decision: choose the release target\n' > "$state/alpha.status"
+  printf 'done: beta completed\n' > "$state/beta.status"
+
+  watch_bg "$state" "$fakebin" "$out"
+  pid=$!
+  wait_for_exit "$pid" 100 || fail "watcher did not surface the actionable status batch"
+
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2> "$drain_err" \
+    || fail "drain after the batched signals failed"
+  alpha_row=$(awk -F '\t' '$3 == "signal" && $4 == "alpha.status" { print; exit }' "$drain_out")
+  beta_row=$(awk -F '\t' '$3 == "signal" && $4 == "beta.status" { print; exit }' "$drain_out")
+  [ -n "$alpha_row" ] && [ -n "$beta_row" ] \
+    || fail "the watcher did not queue one durable row per changed status: $(cat "$drain_out")"
+  case "$alpha_row" in *$'\tneeds-decision: '"$state/alpha.status") ;; *) fail "decision row did not name only alpha: $alpha_row" ;; esac
+  case "$beta_row" in *$'\tsignal: '"$state/beta.status") ;; *) fail "ordinary row did not name only beta: $beta_row" ;; esac
+  case "$alpha_row" in *"$state/beta.status"*) fail "decision row retained beta from the batch: $alpha_row" ;; esac
+  case "$beta_row" in *"$state/alpha.status"*) fail "ordinary row retained alpha from the batch: $beta_row" ;; esac
+
+  sequence=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through \([0-9][0-9]*\) --recovery-generation [A-Za-z0-9._-][A-Za-z0-9._-]*$/\1/p' "$drain_err")
+  generation=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through [0-9][0-9]* --recovery-generation \([A-Za-z0-9._-][A-Za-z0-9._-]*\)$/\1/p' "$drain_err")
+  [ -n "$sequence" ] && [ -n "$generation" ] || fail "batched signal drain omitted its acknowledgement boundary"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" --ack-through "$sequence" --recovery-generation "$generation" \
+    || fail "batched signal acknowledgement failed"
+  [ ! -s "$state/.wake-queue" ] || fail "acknowledgement left batched signal rows queued"
+  pass "batched signal rows stay per-file while their acknowledgement remains generation-bound"
+}
+
 # The opt-in half. Pane churn infers execution from rendered bytes rather than
 # from a verdict the harness vouches for, so a home that has not asked for it must
 # see exactly the pre-change triage: the same churning fixture that absorbs above
@@ -7350,6 +7381,7 @@ test_turn_ended_duplicate_endpoint_records_surfaced
 test_turn_ended_mixed_positive_evidence_batch_absorbed
 test_turn_ended_mixed_positive_evidence_batch_default_off
 test_status_and_turn_end_batch_never_uses_churn_evidence
+test_batched_signal_rows_name_only_their_own_file
 test_turn_ended_churn_absorb_off_by_default
 test_turn_ended_churn_absorb_bounded
 test_turn_ended_churn_timer_write_failure_surfaced

@@ -3821,8 +3821,8 @@ EOF
       || { ! signal_crew_provably_working $files && ! signal_turnend_panes_churned $files; }; then
       while IFS=$(printf '\t') read -r sf sig f; do
         [ -n "$sf" ] || continue
-        file_reason="$reason"
-        case " $FM_SIGNAL_NEEDS_DECISION_FILES " in *" $f "*) file_reason="needs-decision:$files" ;; esac
+        file_reason="signal: $f"
+        case " $FM_SIGNAL_NEEDS_DECISION_FILES " in *" $f "*) file_reason="needs-decision: $f" ;; esac
         fm_wake_append signal "$(basename "$f")" "$file_reason" || exit 1
       done <<EOF
 $pending
