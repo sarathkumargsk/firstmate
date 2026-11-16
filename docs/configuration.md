@@ -1825,6 +1825,18 @@ It uses the same live secondmate discovery and propagation helper as bootstrap; 
 - That live discovery starts from `state/*.meta` records with `kind=secondmate`; `data/secondmates.md` only backfills `home=` for older or incomplete meta records.
 - Skipped items, such as a destination checkout that does not yet gitignore the item, are visible warnings but not hard failures.
 
+## Ship branch naming
+
+Firstmate creates task branches as `<type>/<slug>`, using one of `feature`, `bugfix`, `hotfix`, `release`, `chore`, `refactor`, `docs`, `test`, or `ci`.
+Intake selects the type from the work; when no type is supplied, scripts use `chore`.
+Task ids become lowercase kebab-case slugs, optional ticket ids appear first, and the full branch name is kept below 60 characters.
+Names outside the convention, names containing `..`, names ending in `.lock`, and names 60 characters or longer are refused.
+
+The optional `branch=<type>` token on a `data/projects.md` row overrides the type selected for a task.
+Use `bin/fm-project-mode.sh --branch-prefix <project>` to read it; an empty result means there is no override.
+`bin/fm-branch-lib.sh` owns the validator and derivation, while `bin/fm-brief.sh`, `bin/fm-spawn.sh`, and `bin/fm-promote.sh` own their accepted flags.
+Existing tasks continue using the branch recorded in their task metadata, including legacy `fm/` branches.
+
 ## Forge selection (data/projects.md forge= token)
 
 A project with no `forge=` token is served by the GitHub tooling, `gh` and `gh-axi`, exactly as before the token existed, and the token changes nothing for existing entries.

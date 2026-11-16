@@ -2,25 +2,21 @@
 # Shared task-branch naming for firstmate delivery.
 # Usage: . bin/fm-branch-lib.sh
 #
-# A task branch is `<prefix>/<task-id>`. AGENTS.md section 7 owns the contract
-# (which prefix means what, and who decides it); this library is the single
-# implementation of it, so generators and readers cannot drift apart.
+# A new task branch is `<type>/<slug>`. AGENTS.md section 7 owns the decision;
+# this library owns the accepted types, slug derivation, and validation.
 #
-# Produced prefixes are a closed set: fix, feat, patch. The legacy `fm` prefix is
-# accepted on READ only, so branches created before the scheme changed keep
-# working; nothing here ever produces it.
+# The nine conventional prefixes are accepted for writes. Historical `fix`,
+# `feat`, `patch`, and `fm` branches remain discoverable for existing tasks.
 #
 # No side effects on source. set -u / set -e safe.
 
 # Prefixes this fleet creates, and the wider set it still reads.
-FM_BRANCH_PREFIXES="fix feat patch"
-FM_BRANCH_READ_PREFIXES="fix feat patch fm"
-# Used when a caller supplies no prefix and the task id carries no signal: the
-# smallest claim a branch can make, never the legacy prefix.
-FM_BRANCH_DEFAULT_PREFIX="patch"
+FM_BRANCH_PREFIXES="feature bugfix hotfix release chore refactor docs test ci"
+FM_BRANCH_READ_PREFIXES="feature bugfix hotfix release chore refactor docs test ci fix feat patch fm"
+FM_BRANCH_DEFAULT_TYPE="chore"
 
 # True when <prefix> is one this fleet is allowed to create.
-fm_branch_prefix_valid() {
+fm_branch_type_valid() {
   local candidate=$1 p
   for p in $FM_BRANCH_PREFIXES; do
     [ "$candidate" = "$p" ] && return 0
@@ -28,46 +24,85 @@ fm_branch_prefix_valid() {
   return 1
 }
 
-# Mechanical prefix for <task-id>: a task id already opening with one of the
-# produced prefixes names its own kind, otherwise fall back to the default.
-fm_branch_prefix_for_id() {
-  local id=$1 p
-  for p in $FM_BRANCH_PREFIXES; do
-    case "$id" in
-      "$p"-*) printf '%s\n' "$p"; return 0 ;;
-    esac
-  done
-  printf '%s\n' "$FM_BRANCH_DEFAULT_PREFIX"
+# Validate the convention, including the documented maximum of 59 characters.
+fm_branch_valid() {
+  local branch=$1
+  [ "${#branch}" -lt 60 ] || return 1
+  case "$branch" in *'..'*|*.lock) return 1 ;; esac
+  printf '%s\n' "$branch" | LC_ALL=C grep -Eq '^(feature|bugfix|hotfix|release|chore|refactor|docs|test|ci)/[a-z0-9][a-z0-9/-]*$' \
+    && git check-ref-format --branch "$branch" >/dev/null 2>&1
 }
 
-fm_branch_name() {
-  printf '%s/%s\n' "$1" "$2"
+# Normalize arbitrary task ids to lowercase kebab-case.
+fm_branch_slug() {
+  local value
+  value=$(printf '%s' "$1" | LC_ALL=C tr '[:upper:]' '[:lower:]' | LC_ALL=C sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//; s/-+/-/g')
+  printf '%s\n' "$value"
+}
+
+# Derive `<type>/<slug>` and fit the whole ref under 60 characters. Ticket IDs
+# are validated before lowercasing and occupy the first slug component.
+fm_branch_derive() {
+  local id=$1 type=${2:-$FM_BRANCH_DEFAULT_TYPE} ticket=${3:-} slug ticket_prefix="" max_slug
+  fm_branch_type_valid "$type" || {
+    echo "error: branch type must be one of $FM_BRANCH_PREFIXES (got '$type')" >&2
+    return 1
+  }
+  if [ -n "$ticket" ]; then
+    case "$ticket" in
+      *[!A-Za-z0-9-]*|[!A-Za-z]*-*)
+        echo "error: ticket id must look like ZA-812 (got '$ticket')" >&2
+        return 1 ;;
+    esac
+    printf '%s\n' "$ticket" | LC_ALL=C grep -Eq '^[A-Za-z][A-Za-z0-9]*-[0-9]+$' || {
+      echo "error: ticket id must look like ZA-812 (got '$ticket')" >&2
+      return 1
+    }
+    ticket_prefix="$(fm_branch_slug "$ticket")-"
+  fi
+  slug=$(fm_branch_slug "$id")
+  [ -n "$slug" ] || { echo "error: task id cannot produce a branch slug" >&2; return 1; }
+  max_slug=$((59 - ${#type} - 1))
+  if [ "${#ticket_prefix}" -ge "$max_slug" ]; then
+    echo "error: ticket id leaves no room for a task slug in a branch under 60 characters" >&2
+    return 1
+  fi
+  slug="$ticket_prefix$slug"
+  if [ "${#slug}" -gt "$max_slug" ]; then
+    slug=${slug:0:max_slug}
+    slug=${slug%-}
+  fi
+  [ -n "$slug" ] || { echo "error: branch slug is empty after truncation" >&2; return 1; }
+  printf '%s/%s\n' "$type" "$slug"
+}
+
+# Resolve a caller-selected type or registered type-prefix override, then
+# derive and validate the complete branch name.
+fm_branch_resolve_name() {
+  local id=$1 type=${2:-$FM_BRANCH_DEFAULT_TYPE} ticket=${3:-} prefix=${4:-} selected
+  if [ -n "$prefix" ]; then
+    selected=${prefix%/}
+    fm_branch_type_valid "$selected" || {
+      echo "error: --branch-prefix must be one of the supported branch types with an optional trailing slash (got '$prefix')" >&2
+      return 1
+    }
+    type=$selected
+  fi
+  fm_branch_derive "$id" "$type" "$ticket" || return 1
 }
 
 # Every branch name that could legitimately hold <task-id>'s work, new scheme
 # first and the legacy prefix last. For error messages and read-side probing.
 fm_branch_candidates() {
-  local id=$1 p
-  for p in $FM_BRANCH_READ_PREFIXES; do
-    printf '%s/%s\n' "$p" "$id"
+  local id=$1 p slug
+  slug=$(fm_branch_slug "$id")
+  for p in $FM_BRANCH_PREFIXES; do
+    printf '%s/%s\n' "$p" "$slug"
   done
-}
-
-# Default ship-branch prefix in the `<prefix>/` form the brief, promote, and
-# spawn scripts concatenate with a task id (`$BRANCH_PREFIX$ID`).
-fm_branch_default_prefix_for_id() {
-  printf '%s/\n' "$(fm_branch_prefix_for_id "$1")"
-}
-
-# Normalize an explicit --branch-prefix: a bare produced prefix (fix, feat,
-# patch) gains its `/`; any other value is a project-registered free-form prefix
-# and is kept as given.
-fm_branch_normalize_prefix() {
-  if fm_branch_prefix_valid "$1"; then
-    printf '%s/\n' "$1"
-  else
-    printf '%s\n' "$1"
-  fi
+  # Legacy task branches used the literal task id.
+  for p in $FM_BRANCH_READ_PREFIXES; do
+    case "$p" in fix|feat|patch|fm) printf '%s/%s\n' "$p" "$id" ;; esac
+  done
 }
 
 # Print the ship branch recorded in a task meta file (`branch=`), if any. The

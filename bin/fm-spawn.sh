@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Spawn a direct report: a crewmate in a treehouse or Orca worktree, or a
 # secondmate in its isolated firstmate home.
-# Usage: fm-spawn.sh <task-id> <project-dir> --mode <no-mistakes|direct-PR|local-only> --yolo <on|off> [--branch-prefix <prefix>] [--base-branch <branch>] [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>] [--herdr-resume-lock-wait]
+# Usage: fm-spawn.sh <task-id> <project-dir> --mode <no-mistakes|direct-PR|local-only> --yolo <on|off> [--branch-type <type>] [--ticket-id <id>] [--branch-prefix <type-prefix>] [--base-branch <branch>] [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>] [--herdr-resume-lock-wait]
 #        fm-spawn.sh <task-id> <project-dir> --scout [--base-branch <branch>] [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>] [--herdr-resume-lock-wait]
 #        fm-spawn.sh <task-id> [<firstmate-home>] [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>] --secondmate
 #   --mode and --yolo are this task's delivery contract, REQUIRED for every ship
@@ -40,8 +40,9 @@
 #   loud one-line deviation notice is printed and the spawn continues.
 #   no-mistakes-prod-only is a registry policy rather than a task mode and is
 #   refused as a flag value.
-#   --branch-prefix is the optional prefix selected at intake for this ship's
-#   immutable branch, defaulting to "fm/". It must agree with the branch recorded
+#   --branch-type and --ticket-id select the validated branch slug at intake;
+#   branch type defaults to chore. --branch-prefix overrides the type with a
+#   registered convention type. The resolved name must agree with the branch recorded
 #   in the brief, and is refused on scouts, secondmates, and relaunches. When the
 #   selected branch does not match the project's registered prefix, the spawn
 #   prints a one-line deviation notice and continues, because the registered
@@ -919,7 +920,11 @@ EFFORT=
 BACKEND_ARG=
 MODE=
 YOLO=
-BRANCH_PREFIX=fm/
+BRANCH_PREFIX=
+BRANCH_TYPE=chore
+BRANCH_TYPE_SET=0
+TICKET_ID=
+TICKET_ID_SET=0
 TRACEPARENT_ARG=
 HARNESS_SET=0
 MODEL_SET=0
@@ -975,6 +980,14 @@ for a in "$@"; do
     branch-prefix)
       BRANCH_PREFIX=$a
       BRANCH_PREFIX_SET=1
+      ;;
+    branch-type)
+      BRANCH_TYPE=$a
+      BRANCH_TYPE_SET=1
+      ;;
+    ticket-id)
+      TICKET_ID=$a
+      TICKET_ID_SET=1
       ;;
     base-branch)
       BASE_BRANCH=$a
@@ -1042,6 +1055,16 @@ for a in "$@"; do
     BRANCH_PREFIX=${a#--branch-prefix=}
     BRANCH_PREFIX_SET=1
     ;;
+  --branch-type) want_value="branch-type" ;;
+  --branch-type=*)
+    BRANCH_TYPE=${a#--branch-type=}
+    BRANCH_TYPE_SET=1
+    ;;
+  --ticket-id) want_value="ticket-id" ;;
+  --ticket-id=*)
+    TICKET_ID=${a#--ticket-id=}
+    TICKET_ID_SET=1
+    ;;
   --base-branch) want_value="base-branch" ;;
   --base-branch=*)
     BASE_BRANCH=${a#--base-branch=}
@@ -1064,6 +1087,14 @@ done
   echo "error: --$want_value requires a value" >&2
   exit 1
 }
+if [ "$BRANCH_PREFIX_SET" -eq 1 ] && [ -z "$BRANCH_PREFIX" ]; then
+  echo "error: --branch-prefix requires one of the supported branch types" >&2
+  exit 1
+fi
+if [ "$TICKET_ID_SET" -eq 1 ] && [ -z "$TICKET_ID" ]; then
+  echo "error: --ticket-id requires a non-empty ticket id such as ZA-812" >&2
+  exit 1
+fi
 [ "$HARNESS_SET" -eq 0 ] || [ -n "$HARNESS_ARG" ] || {
   echo "error: --harness requires a non-empty value" >&2
   exit 1
@@ -1142,6 +1173,14 @@ if [ "$RELAUNCH" -eq 1 ]; then
     echo "error: --relaunch reuses the task's recorded ship branch; --branch-prefix cannot override it" >&2
     exit 1
   }
+  [ "$BRANCH_TYPE_SET" -eq 0 ] || {
+    echo "error: --relaunch reuses the task's recorded ship branch; --branch-type cannot override it" >&2
+    exit 1
+  }
+  [ "$TICKET_ID_SET" -eq 0 ] || {
+    echo "error: --relaunch reuses the task's recorded ship branch; --ticket-id cannot override it" >&2
+    exit 1
+  }
   [ "$BASE_BRANCH_SET" -eq 0 ] || {
     echo "error: --relaunch reuses the task's recorded base branch; --base-branch cannot override it" >&2
     exit 1
@@ -1202,8 +1241,8 @@ else
       echo "error: --yolo applies only to ship spawns; a scout delivers a report and a secondmate records its own fixed posture" >&2
       exit 1
     }
-    [ "$BRANCH_PREFIX_SET" -eq 0 ] || {
-      echo "error: --branch-prefix applies only to ship spawns; a scout makes no branch and a secondmate records no ship branch" >&2
+    [ "$BRANCH_PREFIX_SET" -eq 0 ] && [ "$BRANCH_TYPE_SET" -eq 0 ] && [ "$TICKET_ID_SET" -eq 0 ] || {
+      echo "error: branch naming options apply only to ship spawns; a scout makes no branch and a secondmate records no ship branch" >&2
       exit 1
     }
     [ "$KIND" != secondmate ] || [ "$BASE_BRANCH_SET" -eq 0 ] || {
@@ -1981,6 +2020,8 @@ if [ "${#POS[@]}" -gt 0 ] && [ "${POS[0]}" != "$idpart" ] && case "$idpart" in *
   [ "$MODE_SET" -eq 0 ] || shared_args+=(--mode "$MODE")
   [ "$YOLO_SET" -eq 0 ] || shared_args+=(--yolo "$YOLO")
   [ "$BRANCH_PREFIX_SET" -eq 0 ] || shared_args+=(--branch-prefix "$BRANCH_PREFIX")
+  [ "$BRANCH_TYPE_SET" -eq 0 ] || shared_args+=(--branch-type "$BRANCH_TYPE")
+  [ "$TICKET_ID_SET" -eq 0 ] || shared_args+=(--ticket-id "$TICKET_ID")
   [ "$BASE_BRANCH_SET" -eq 0 ] || shared_args+=(--base-branch "$BASE_BRANCH")
   [ "$HERDR_RESUME_LOCK_WAIT" -eq 0 ] || shared_args+=(--herdr-resume-lock-wait)
   for pair in "${POS[@]}"; do
@@ -2017,19 +2058,9 @@ fm_task_id_creation_valid "$ID" || {
   exit 2
 }
 if [ "$RELAUNCH" -eq 0 ] && [ "$KIND" = ship ]; then
-  if [ "$BRANCH_PREFIX_SET" -eq 1 ]; then
-    BRANCH_PREFIX=$(fm_branch_normalize_prefix "$BRANCH_PREFIX")
-  elif [ -f "${DATA:-$FM_HOME/data}/$ID/brief.md" ] &&
-    ! grep -q '^Ship branch: ' "${DATA:-$FM_HOME/data}/$ID/brief.md"; then
-    # A brief scaffolded before ship briefs recorded a branch line: keep the
-    # legacy name it was written against rather than guess a new prefix.
-    BRANCH_PREFIX=fm/
-  else
-    BRANCH_PREFIX=$(fm_branch_default_prefix_for_id "$ID")
-  fi
-  BRANCH="$BRANCH_PREFIX$ID"
-  if ! git check-ref-format --branch "$BRANCH" >/dev/null 2>&1; then
-    echo "error: --branch-prefix and task id must form a valid git branch (got '$BRANCH')" >&2
+  BRANCH=$(fm_branch_resolve_name "$ID" "$BRANCH_TYPE" "$TICKET_ID" "$BRANCH_PREFIX") || exit 1
+  if ! fm_branch_valid "$BRANCH"; then
+    echo "error: invalid ship branch '$BRANCH'; expected <type>/<lowercase-kebab-slug> under 60 characters with no '..' or '.lock' suffix" >&2
     exit 1
   fi
 fi
@@ -4080,14 +4111,14 @@ if [ "$KIND" = ship ]; then
     [ "$(delivery_rigor_rank "$MODE")" -lt "$(delivery_rigor_rank "$STANDING_MODE")" ]; then
     echo "notice: $ID ships mode=$MODE while the standing posture for $PROJ_NAME is $STANDING_MODE - less rigor than the captain's standing posture; proceed only on a current explicit captain instruction or an intake judgment you can state" >&2
   fi
-  # The registered ship-branch prefix (bin/fm-project-mode.sh) is the captain's
-  # answer to "should this project's branches read as firstmate-authored", so a
-  # spawn that ships the legacy fm/ prefix past a registered override is
-  # announced, not refused: the brief-vs-spawn agreement above already
-  # guarantees the worker's instructions match the branch this spawn selected.
+  # A registered branch type is a task-independent project choice. Compare the
+  # resolved branch with that type plus the selected ticket and normalized slug.
   STANDING_BRANCH=$("$FM_ROOT/bin/fm-project-mode.sh" --branch-prefix "$PROJ_NAME" 2>/dev/null) || STANDING_BRANCH=
-  if [ "$BRANCH" != "$STANDING_BRANCH$ID" ]; then
-    echo "notice: $ID ships branch=$BRANCH while $PROJ_NAME registers the ship-branch prefix '$STANDING_BRANCH' (branch $STANDING_BRANCH$ID) - the task's branch and PR will read as firstmate-authored; proceed only on a current explicit captain instruction or an intake judgment you can state" >&2
+  if [ -n "$STANDING_BRANCH" ]; then
+    EXPECTED_STANDING_BRANCH=$(fm_branch_resolve_name "$ID" "$BRANCH_TYPE" "$TICKET_ID" "$STANDING_BRANCH") || exit 1
+    if [ "$BRANCH" != "$EXPECTED_STANDING_BRANCH" ]; then
+      echo "notice: $ID ships branch=$BRANCH while $PROJ_NAME registers branch type '$STANDING_BRANCH' (expected $EXPECTED_STANDING_BRANCH); pass the registry override at intake or correct the project registry" >&2
+    fi
   fi
 fi
 

@@ -423,11 +423,11 @@ yolo on a ship brief|brief-refused-b1 some-proj --mode direct-PR --yolo on|--yol
 yolo=value form on a ship brief|brief-refused-b2 some-proj --mode direct-PR --yolo=off|--yolo is not a brief input
 mode on a scout brief|brief-refused-b3 some-proj --scout --mode direct-PR|--mode applies only to ship briefs
 mode on a secondmate charter|brief-refused-b4 --secondmate --no-projects --mode no-mistakes|--mode applies only to ship briefs
-branch prefix on a scout brief|brief-refused-b5 some-proj --scout --branch-prefix feat|--branch-prefix applies only to ship briefs
-branch prefix on a secondmate charter|brief-refused-b6 --secondmate --no-projects --branch-prefix fix|--branch-prefix applies only to ship briefs
-branch prefix opening with a dash|brief-refused-b7 some-proj --mode local-only --branch-prefix=-chore/|--branch-prefix must not start with
+branch prefix on a scout brief|brief-refused-b5 some-proj --scout --branch-prefix feature|branch naming options apply only to ship briefs
+branch prefix on a secondmate charter|brief-refused-b6 --secondmate --no-projects --branch-prefix bugfix|branch naming options apply only to ship briefs
+branch prefix opening with a dash|brief-refused-b7 some-proj --mode local-only --branch-prefix=-chore/|must be one of the supported branch types
 empty branch prefix value|brief-refused-b8 some-proj --mode local-only --branch-prefix|requires a value
-explicit empty branch prefix on a scout brief|brief-refused-b10 some-proj --scout --branch-prefix=|--branch-prefix applies only to ship briefs
+explicit empty branch prefix on a scout brief|brief-refused-b10 some-proj --scout --branch-prefix=|requires one of the supported branch types
 ROWS
   pass "fm-brief.sh: --yolo and scout/secondmate --mode are refused, never silently dropped"
 }
@@ -1174,9 +1174,8 @@ test_scout_and_secondmate_scaffold() {
 }
 
 # AGENTS.md section 7's branch contract: every generated ship brief names a
-# conventional `<prefix>/<task-id>` branch, the prefix is settled here rather than
-# by the worker, and the retired `fm/` prefix is never produced again - including
-# for a task id that carries no prefix signal of its own.
+# conventional `<type>/<slug>` branch, the type is settled here rather than by
+# the worker, and the retired `fm/` prefix is never produced again.
 test_ship_branch_is_conventional_and_never_legacy() {
   local home id mode brief
   home="$TMP_ROOT/branch-scheme-home"
@@ -1187,16 +1186,16 @@ test_ship_branch_is_conventional_and_never_legacy() {
     FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode "$mode" >/dev/null 2>&1 \
       || fail "$id: --mode $mode brief should scaffold"
     brief="$home/data/$id/brief.md"
-    assert_grep "git checkout -b patch/$id" "$brief" \
-      "$id: an unsignalled task id must still get a conventional prefix"
+    assert_grep "git checkout -b chore/$id" "$brief" \
+      "$id: a missing type must use the safe chore default"
     assert_no_grep "fm/$id" "$brief" "$id: the retired fm/ prefix must never be generated"
   done
   pass "fm-brief.sh: ship briefs name a conventional branch and never the legacy fm/ prefix"
 }
 
-# The prefix is mechanical: a task id that already names its kind decides it, and
-# an explicit --branch-prefix overrides when the mechanical answer is wrong.
-test_ship_branch_prefix_is_derived_and_overridable() {
+# The caller selects the branch type, while an explicit --branch-prefix type
+# overrides it.
+test_ship_branch_type_is_selected_and_overridable() {
   local home id brief label expect
   home="$TMP_ROOT/branch-prefix-home"
   write_registry "$home"
@@ -1211,12 +1210,12 @@ test_ship_branch_prefix_is_derived_and_overridable() {
     grep -qF "Work only on your \`$expect\` branch" "$brief" \
       || fail "$id: rule 1 must name the same branch"
   done <<'ROWS'
-fix-broken-thing||fix/fix-broken-thing
-feat-new-thing||feat/feat-new-thing
-patch-small-thing||patch/patch-small-thing
-override-c4|--branch-prefix feat|feat/override-c4
-override-c5|--branch-prefix=fix|fix/override-c5
-fix-but-really-a-feature|--branch-prefix feat|feat/fix-but-really-a-feature
+fix-broken-thing|--branch-type bugfix|bugfix/fix-broken-thing
+feat-new-thing|--branch-type feature|feature/feat-new-thing
+patch-small-thing|--branch-type chore|chore/patch-small-thing
+override-c4|--branch-prefix feature|feature/override-c4
+override-c5|--branch-prefix=bugfix|bugfix/override-c5
+fix-but-really-a-feature|--branch-type feature|feature/fix-but-really-a-feature
 ROWS
   pass "fm-brief.sh: the branch prefix is derived from the task id and explicitly overridable"
 }
@@ -1494,9 +1493,8 @@ test_base_branch_is_rendered_and_bounded() {
   pass "fm-brief.sh: --base-branch records the base, targets the PR at it, and is refused where no PR carries it"
 }
 
-# (a) An unregistered/default project - no --branch-prefix passed at all - gets
-# the derived conventional prefix (bin/fm-branch-lib.sh) in every ship mode.
-test_ship_branch_prefix_defaults_to_derived_prefix() {
+# No type supplied means the documented safe default, chore.
+test_ship_branch_type_defaults_to_chore() {
   local home id mode brief
   home="$TMP_ROOT/branch-prefix-default-home"
   mkdir -p "$home/data"
@@ -1506,10 +1504,10 @@ test_ship_branch_prefix_defaults_to_derived_prefix() {
     FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode "$mode" >/dev/null 2>&1
     brief="$home/data/$id/brief.md"
     # shellcheck disable=SC2016  # literal backticks around the branch name must stay unexpanded
-    assert_grep "\`git checkout -b patch/$id --\`" "$brief" \
-      "$mode: omitting --branch-prefix must create the derived patch/<task-id> branch"
+    assert_grep "\`git checkout -b chore/$id --\`" "$brief" \
+      "$mode: omitting --branch-type must create the default chore/<slug> branch"
   done
-  pass "fm-brief.sh: --branch-prefix omitted defaults every ship mode to the derived <prefix>/<task-id>"
+  pass "fm-brief.sh: --branch-type omitted defaults every ship mode to chore/<slug>"
 }
 
 # (b) + (c) A configured override must replace "fm/" everywhere the branch name is
@@ -1521,40 +1519,40 @@ test_ship_branch_prefix_override_is_consistent_across_modes() {
   mkdir -p "$home/data"
 
   id="brief-branch-override-nm-e4"
-  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode no-mistakes --branch-prefix 'contrib/' >/dev/null 2>&1
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode no-mistakes --branch-prefix 'bugfix/' >/dev/null 2>&1
   brief="$home/data/$id/brief.md"
   # shellcheck disable=SC2016
-  assert_grep "\`git checkout -b contrib/$id --\`" "$brief" \
+  assert_grep "\`git checkout -b bugfix/$id --\`" "$brief" \
     "no-mistakes: branch-creation command did not use the configured override"
   assert_no_grep "fm/$id" "$brief" \
     "no-mistakes: brief mixed the legacy fm/ prefix in with the configured override"
 
   id="brief-branch-override-dp-e5"
-  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode direct-PR --branch-prefix 'contrib/' >/dev/null 2>&1
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode direct-PR --branch-prefix 'bugfix/' >/dev/null 2>&1
   brief="$home/data/$id/brief.md"
   # shellcheck disable=SC2016
-  assert_grep "\`git checkout -b contrib/$id --\`" "$brief" \
+  assert_grep "\`git checkout -b bugfix/$id --\`" "$brief" \
     "direct-PR: branch-creation command did not use the configured override"
   # shellcheck disable=SC2016
-  assert_grep "push only your \`contrib/$id\` branch" "$brief" \
+  assert_grep "push only your \`bugfix/$id\` branch" "$brief" \
     "direct-PR: never-push rule text did not use the configured override"
   assert_no_grep "fm/$id" "$brief" \
     "direct-PR: brief mixed the legacy fm/ prefix in with the configured override"
 
   id="brief-branch-override-lo-e6"
-  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode local-only --branch-prefix 'contrib/' >/dev/null 2>&1
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode local-only --branch-prefix 'bugfix/' >/dev/null 2>&1
   brief="$home/data/$id/brief.md"
   # shellcheck disable=SC2016
-  assert_grep "\`git checkout -b contrib/$id --\`" "$brief" \
+  assert_grep "\`git checkout -b bugfix/$id --\`" "$brief" \
     "local-only: branch-creation command did not use the configured override"
   # shellcheck disable=SC2016
-  assert_grep "Work only on your \`contrib/$id\` branch" "$brief" \
+  assert_grep "Work only on your \`bugfix/$id\` branch" "$brief" \
     "local-only: never-push rule text did not use the configured override"
   # shellcheck disable=SC2016
-  assert_grep "committed on your branch \`contrib/$id\`" "$brief" \
+  assert_grep "committed on your branch \`bugfix/$id\`" "$brief" \
     "local-only: definition-of-done text did not use the configured override"
   # shellcheck disable=SC2016
-  assert_grep "\`done [at=<epoch>]: ready in branch contrib/$id\`" "$brief" \
+  assert_grep "\`done [at=<epoch>]: ready in branch bugfix/$id\`" "$brief" \
     "local-only: status-message text did not use the configured override"
   assert_no_grep "fm/$id" "$brief" \
     "local-only: brief mixed the legacy fm/ prefix in with the configured override"
@@ -1563,21 +1561,29 @@ test_ship_branch_prefix_override_is_consistent_across_modes() {
 
 # An empty override must still resolve to a valid, sensible branch name: the bare
 # task id, never a leading slash and never an empty branch name.
-test_ship_branch_prefix_empty_override_yields_bare_task_id() {
-  local home id brief
+test_branch_type_ticket_and_slug_limits() {
+  local home id brief branch out status long_id
   home="$TMP_ROOT/branch-prefix-bare-home"
   mkdir -p "$home/data"
   id="brief-branch-bare-e7"
-  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode local-only --branch-prefix '' >/dev/null 2>&1
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode local-only --branch-type feature --ticket-id ZA-812 >/dev/null 2>&1
   brief="$home/data/$id/brief.md"
   # shellcheck disable=SC2016
-  assert_grep "\`git checkout -b $id --\`" "$brief" \
-    "an empty --branch-prefix must yield a bare <task-id> branch"
-  assert_no_grep "checkout -b /$id" "$brief" \
-    "an empty --branch-prefix produced a leading-slash branch name"
-  assert_no_grep "fm/$id" "$brief" \
-    "an empty --branch-prefix left the legacy fm/ prefix in place"
-  pass "fm-brief.sh: an empty --branch-prefix override resolves to a bare <task-id> branch"
+  assert_grep "\`git checkout -b feature/za-812-$id --\`" "$brief" \
+    "type and ticket flags should produce a ticket-first slug"
+  long_id=$(printf 'x%.0s' {1..64})
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$long_id" some-proj --mode local-only --branch-type bugfix >/dev/null 2>&1
+  branch=$(sed -n 's/^Ship branch: //p' "$home/data/$long_id/brief.md" | head -n 1)
+  [ "${#branch}" -eq 59 ] || fail "long task id should truncate full branch to 59 characters (got ${#branch})"
+  out=$(FM_HOME="$home" "$ROOT/bin/fm-brief.sh" brief-bad-type-h --mode local-only --branch-type featurez 2>&1)
+  status=$?
+  [ "$status" -ne 0 ] || fail "an unsupported type should be refused"
+  assert_contains "$out" "branch type must be one of" "type refusal did not name the accepted set"
+  out=$(FM_HOME="$home" "$ROOT/bin/fm-brief.sh" brief-bad-ticket-h --mode local-only --ticket-id 'bad ticket' 2>&1)
+  status=$?
+  [ "$status" -ne 0 ] || fail "a malformed ticket should be refused"
+  assert_contains "$out" "ticket id must look like ZA-812" "ticket refusal did not explain the accepted shape"
+  pass "fm-brief.sh: branch type and ticket flags render the ticket-first convention name"
 }
 
 test_branch_prefix_is_refused_where_it_does_not_apply() {
@@ -1593,15 +1599,13 @@ test_branch_prefix_is_refused_where_it_does_not_apply() {
     assert_contains "$out" "$expect" "$label: refusal did not explain why"
     assert_absent "$home/data/${args%% *}/brief.md" "$label: refused scaffold still wrote a brief"
   done <<'ROWS'
-branch-prefix on a scout brief|brief-branchref-f1 some-proj --scout --branch-prefix fix/|--branch-prefix applies only to ship briefs
-branch-prefix on a secondmate charter|brief-branchref-f2 --secondmate --no-projects --branch-prefix fix/|--branch-prefix applies only to ship briefs
+branch-prefix on a scout brief|brief-branchref-f1 some-proj --scout --branch-prefix bugfix/|branch naming options apply only to ship briefs
+branch-prefix on a secondmate charter|brief-branchref-f2 --secondmate --no-projects --branch-prefix bugfix/|branch naming options apply only to ship briefs
 ROWS
   pass "fm-brief.sh: --branch-prefix is refused on scout and secondmate scaffolds"
 }
 
-# A branch prefix is embedded verbatim into a `git checkout -b` command in the
-# generated brief, so a space or a leading dash could corrupt or hijack that
-# command; both must be rejected loudly rather than silently accepted.
+# Prefixes outside the closed convention type set must be rejected.
 test_branch_prefix_value_is_validated() {
   local home out status
   home="$TMP_ROOT/branch-prefix-validated-home"
@@ -1610,43 +1614,28 @@ test_branch_prefix_value_is_validated() {
   out=$(FM_HOME="$home" "$ROOT/bin/fm-brief.sh" brief-branchval-g1 some-proj --mode no-mistakes --branch-prefix 'bad prefix/' 2>&1)
   status=$?
   [ "$status" -ne 0 ] || fail "a space-containing --branch-prefix should be refused"
-  assert_contains "$out" "must not contain a space" "space-containing --branch-prefix did not explain why"
+  assert_contains "$out" "must be one of the supported branch types" "invalid --branch-prefix did not explain why"
   assert_absent "$home/data/brief-branchval-g1/brief.md" "refused space-containing --branch-prefix still wrote a brief"
 
   out=$(FM_HOME="$home" "$ROOT/bin/fm-brief.sh" brief-branchval-g2 some-proj --mode no-mistakes --branch-prefix=-oops 2>&1)
   status=$?
   [ "$status" -ne 0 ] || fail "a dash-leading --branch-prefix should be refused"
-  assert_contains "$out" "must not start with '-'" "dash-leading --branch-prefix did not explain why"
+  assert_contains "$out" "must be one of the supported branch types" "invalid --branch-prefix did not explain why"
   assert_absent "$home/data/brief-branchval-g2/brief.md" "refused dash-leading --branch-prefix still wrote a brief"
 
   pass "fm-brief.sh: --branch-prefix value is validated against embedded spaces and a leading dash"
 }
 
-test_branch_prefix_command_is_shell_safe() {
-  local home id prefix marker brief command repo branch
+test_branch_prefix_refuses_shell_metacharacters() {
+  local home out status
   home="$TMP_ROOT/branch-prefix-shell-safe-home"
-  # Keep the marker's literal path ref-format-valid too: the test harness's
-  # temporary directory can have a dot-prefixed component, which Git forbids.
-  marker="/tmp/fm-branch-prefix-shell-safe-$$"
-  id='brief-branch-safe-g3'
-  # Backticks are permitted in a Git ref and would execute if the rendered
-  # branch command failed to quote its configured prefix.
-  prefix="\`touch\${IFS}$marker\`"
   mkdir -p "$home/data"
-  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode local-only --branch-prefix "$prefix" >/dev/null 2>&1 \
-    || fail "a ref-format-valid metacharacter prefix should scaffold safely"
-  brief="$home/data/$id/brief.md"
-  # shellcheck disable=SC2016 # The sed expression intentionally contains literal backticks.
-  command=$(sed -n 's/^1\. First action: create your branch: `\(.*\)`$/\1/p' "$brief")
-  [ -n "$command" ] || fail "generated brief exposed no branch-creation command"
-  repo="$TMP_ROOT/branch-prefix-shell-safe-repo"
-  git init -q "$repo" || fail "could not initialize shell-safety fixture repository"
-  ( cd "$repo" && eval "$command" ) || fail "generated branch-creation command did not run"
-  assert_absent "$marker" "generated branch command executed the prefix's command substitution"
-  branch=$(git -C "$repo" branch --show-current)
-  [ "$branch" = "$prefix$id" ] \
-    || fail "generated branch command did not create the literal configured branch (got '$branch')"
-  pass "fm-brief.sh: ref-format-valid shell metacharacters stay literal in generated branch commands"
+  # shellcheck disable=SC2016 # This literal is the invalid input being refused.
+  out=$(FM_HOME="$home" "$ROOT/bin/fm-brief.sh" brief-branch-safe-g3 some-proj --mode local-only --branch-prefix 'feature/$(touch marker)' 2>&1)
+  status=$?
+  [ "$status" -ne 0 ] || fail "shell metacharacters in branch-prefix should be refused"
+  assert_contains "$out" "must be one of the supported branch types" "branch-prefix refusal did not explain the allowed type set"
+  pass "fm-brief.sh refuses shell metacharacters in a branch prefix"
 }
 
 test_worker_role_scope
@@ -1732,7 +1721,7 @@ test_forge_external_renders_the_review_rail
 test_ship_mode_is_required_and_closed_set
 test_ship_mode_is_explicit_not_registry
 test_ship_branch_is_conventional_and_never_legacy
-test_ship_branch_prefix_is_derived_and_overridable
+test_ship_branch_type_is_selected_and_overridable
 test_delivery_flags_are_refused_where_they_do_not_apply
 test_faster_paths_use_configured_authority_without_stacked_review
 test_no_mistakes_dod_wording
@@ -1759,10 +1748,10 @@ test_wait_no_turns_absent_keeps_the_previous_brief
 test_inbox_guidance_explains_marked_body_terminator
 test_home_brief_include_is_appended_last
 test_base_branch_is_rendered_and_bounded
-test_ship_branch_prefix_defaults_to_derived_prefix
+test_ship_branch_type_defaults_to_chore
 test_ship_branch_prefix_override_is_consistent_across_modes
-test_ship_branch_prefix_empty_override_yields_bare_task_id
+test_branch_type_ticket_and_slug_limits
 test_branch_prefix_is_refused_where_it_does_not_apply
 test_branch_prefix_value_is_validated
-test_branch_prefix_command_is_shell_safe
+test_branch_prefix_refuses_shell_metacharacters
 test_crewmate_scaffolds_forbid_pool_administration

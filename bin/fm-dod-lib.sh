@@ -10,9 +10,9 @@
 # prints the block on stdout with no trailing blank line. The caller validates the
 # mode; an unknown mode is refused rather than silently rendered as the pipeline
 # contract.
-# The optional third argument is the task's full ship-branch name (a project's
-# registered prefix may replace the legacy `fm/` one); it defaults to `fm/<task-id>`
-# and is the immutable task branch rendered in every delivery contract.
+# The optional third argument is the task's full ship-branch name; it defaults
+# to `chore/<task-id>` and is the immutable task branch rendered in every delivery
+# contract.
 # The optional fifth argument is the task's base branch from bin/fm-brief.sh
 # --base-branch; empty means the repository default. A named base is the branch
 # the worker starts from, never pushes to, and targets with its pull request, and
@@ -177,12 +177,11 @@ fm_forge_valid_for_mode() {  # <forge> <mode> <caller>
   return 0
 }
 
-# The task branch prefix: <branch> with its trailing <task-id> removed, or
-# empty when the branch is the bare task id or does not end with it.
+# The task branch type prefix, or empty for an old branch without a slash.
 fm_ship_branch_prefix() {  # <branch> <task-id>
-  local branch=$1 id=$2
+  local branch=$1
   case "$branch" in
-    *"$id") printf '%s\n' "${branch%"$id"}" ;;
+    */*) printf '%s/\n' "${branch%%/*}" ;;
     *) printf '\n' ;;
   esac
 }
@@ -226,7 +225,7 @@ fm_brief_base_branches() {  # <brief>
 
 fm_ship_rule_one() {  # <no-mistakes|direct-PR|local-only> <task-id> [branch] [<forge>] [<base>]
   local mode=$1 id=$2 forge=${4:-none} base=${5:-}
-  local branch=${3:-fm/$id} target='the default branch'
+  local branch=${3:-chore/$id} target='the default branch'
   fm_forge_valid_for_mode "$forge" "$mode" fm_ship_rule_one || return 1
   fm_base_branch_valid "$base" "$mode" "$forge" fm_ship_rule_one || return 1
   [ -z "$base" ] || target="the base branch \`$base\` or the default branch"
@@ -450,7 +449,7 @@ EOF
 
 fm_dod_block() {  # <mode> <task-id> [branch] [<forge>] [<base>] [<consent>]
   local mode=$1 id=$2 forge=${4:-none} base=${5:-} consent=${6:-}
-  local branch=${3:-fm/$id} pr_base='' nm_base='' base_q contract_forge='' contract_consent='' forge_cli=gh-axi draft_check adapter
+  local branch=${3:-chore/$id} pr_base='' nm_base='' base_q contract_forge='' contract_consent='' forge_cli=gh-axi draft_check adapter
   fm_forge_valid_for_mode "$forge" "$mode" fm_dod_block || return 1
   fm_base_branch_valid "$base" "$mode" "$forge" fm_dod_block || return 1
   if [ -n "$consent" ]; then
