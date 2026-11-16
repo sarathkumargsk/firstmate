@@ -20,7 +20,7 @@ make_repo() {
 
 test_derivation_validation_and_override() {
   local n
-  n=$(fm_branch_resolve_name 'TASK ID-With__Punctuation')
+  n=$(fm_branch_resolve_name 'TASK ID-With__Punctuation' chore)
   [ "$n" = chore/task-id-with-punctuation ] || fail "no-type default or normalization failed: '$n'"
   n=$(fm_branch_resolve_name task-482 bugfix ZA-812)
   [ "$n" = bugfix/za-812-task-482 ] || fail "ticket placement failed: '$n'"
@@ -33,6 +33,7 @@ test_derivation_validation_and_override() {
     ! fm_branch_valid "$n" || fail "invalid branch should be refused: $n"
   done
   ! fm_branch_resolve_name task unsupported >/dev/null 2>&1 || fail "unknown type was accepted"
+  ! fm_branch_resolve_name task >/dev/null 2>&1 || fail "an omitted type was accepted"
   ! fm_branch_resolve_name task chore 'bad ticket' >/dev/null 2>&1 || fail "malformed ticket was accepted"
   pass "fm-branch-lib derives, truncates, overrides, and validates convention branch names"
 }

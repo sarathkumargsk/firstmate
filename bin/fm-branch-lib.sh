@@ -13,7 +13,6 @@
 # Prefixes this fleet creates, and the wider set it still reads.
 FM_BRANCH_PREFIXES="feature bugfix hotfix release chore refactor docs test ci"
 FM_BRANCH_READ_PREFIXES="feature bugfix hotfix release chore refactor docs test ci fix feat patch fm"
-FM_BRANCH_DEFAULT_TYPE="chore"
 
 # True when <prefix> is one this fleet is allowed to create.
 fm_branch_type_valid() {
@@ -43,7 +42,7 @@ fm_branch_slug() {
 # Derive `<type>/<slug>` and fit the whole ref under 60 characters. Ticket IDs
 # are validated before lowercasing and occupy the first slug component.
 fm_branch_derive() {
-  local id=$1 type=${2:-$FM_BRANCH_DEFAULT_TYPE} ticket=${3:-} slug ticket_prefix="" max_slug
+  local id=$1 type=${2:-} ticket=${3:-} slug ticket_prefix="" max_slug
   fm_branch_type_valid "$type" || {
     echo "error: branch type must be one of $FM_BRANCH_PREFIXES (got '$type')" >&2
     return 1
@@ -79,7 +78,7 @@ fm_branch_derive() {
 # Resolve a caller-selected type or registered type-prefix override, then
 # derive and validate the complete branch name.
 fm_branch_resolve_name() {
-  local id=$1 type=${2:-$FM_BRANCH_DEFAULT_TYPE} ticket=${3:-} prefix=${4:-} selected
+  local id=$1 type=${2:-} ticket=${3:-} prefix=${4:-} selected
   if [ -n "$prefix" ]; then
     selected=${prefix%/}
     fm_branch_type_valid "$selected" || {

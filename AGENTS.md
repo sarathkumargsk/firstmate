@@ -193,7 +193,7 @@ Resolve every ship task's concrete delivery mode and `yolo` merge posture at int
 Pass the mode explicitly to the brief, and pass both values explicitly to the spawn and any scout promotion; each command refuses to guess the values it consumes.
 A current explicit captain instruction wins; otherwise the project's registry entry is the captain's standing posture, and dropping below its rigor needs a reason you can state.
 Choose a ship branch type from the task: feature for new functionality, bugfix for a known defect, hotfix for an urgent production fix, release for release preparation, chore for maintenance or when no narrower type fits, refactor for behavior-preserving restructuring, docs for documentation, test for tests, and ci for CI/CD.
-Pass `--branch-type` and optional `--ticket-id` to the brief, ship spawn, and scout promotion; `bin/fm-branch-lib.sh` owns slug derivation and validation.
+Require an explicit `--branch-type` at brief and scout promotion; pass it with any optional `--ticket-id` to ship spawn too, which reads and checks the brief's `Ship branch:` line. `chore` is a valid deliberate choice, never an implicit default; `bin/fm-branch-lib.sh` owns slug derivation and validation.
 A registered project `branch=` type overrides the task type via `bin/fm-project-mode.sh --branch-prefix <project>`; pass that as `--branch-prefix`.
 See [branch naming](docs/configuration.md#ship-branch-naming) and script headers for exact flags.
 When the work must start from and target a branch other than the project's default, such as a named feature or release branch, pass it to the ship or scout brief and spawn as `--base-branch <branch>`; any promotion reads it from task meta.

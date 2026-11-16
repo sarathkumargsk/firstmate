@@ -14,7 +14,7 @@
 # charters still use a single `{TASK}` charter fill. Firstmate may adjust other
 # sections when the task genuinely deviates (e.g. working an existing external
 # PR instead of shipping a new one).
-# Usage: fm-brief.sh <task-id> <repo-name> --mode <no-mistakes|direct-PR|local-only> [--branch-type <type>] [--ticket-id <id>] [--branch-prefix <type-prefix>] [--base-branch <branch>] [--forge <none|gerrit|forgejo|external> [--shape squash]] [--herdr-lab]
+# Usage: fm-brief.sh <task-id> <repo-name> --mode <no-mistakes|direct-PR|local-only> --branch-type <type> [--ticket-id <id>] [--branch-prefix <type-prefix>] [--base-branch <branch>] [--forge <none|gerrit|forgejo|external> [--shape squash]] [--herdr-lab]
 #        fm-brief.sh <task-id> <repo-name> --scout [--base-branch <branch>] [--herdr-lab]
 #        fm-brief.sh <task-id> --secondmate {<project>...|--no-projects}
 #   --scout writes the scout contract instead: the deliverable is a report at
@@ -47,8 +47,8 @@
 #                the configured merge authority approves, firstmate merges to local main
 # no-mistakes-prod-only is a registry policy, not a task mode; resolve it to one of
 # the three concrete modes at intake before calling this script.
-# --branch-type <type> selects one of feature, bugfix, hotfix, release, chore,
-# refactor, docs, test, or ci. It defaults to chore. The branch is derived as
+# --branch-type <type> is required and selects one of feature, bugfix, hotfix,
+# release, chore, refactor, docs, test, or ci. The branch is derived as
 # <type>/<normalized-task-id>, lowercased and truncated to keep the full name under
 # 60 characters. --ticket-id <id> puts a validated ticket such as ZA-812 first
 # in that slug. --branch-prefix <type-prefix> overrides the type while retaining
@@ -109,8 +109,8 @@
 # their own slot came from - so ship and scout cannot drift apart. A secondmate
 # charter omits it: that home allocates and returns slots for its own crewmates.
 # The ship branch is `<type>/<slug>`, resolved here so the worker never picks a
-# name at runtime. --branch-type chooses one of the nine conventional types and
-# defaults to chore; --ticket-id adds a ticket to the slug; --branch-prefix is a
+# name at runtime. Ship callers must choose --branch-type from the nine
+# conventional types explicitly; --ticket-id adds a ticket to the slug; --branch-prefix is a
 # per-project override that must also be one of those types. bin/fm-branch-lib.sh
 # owns derivation, validation, and legacy branch reads.
 # --mode, --forge, and --shape are refused on scout and secondmate scaffolds: a
@@ -222,7 +222,7 @@ MODE=
 MODE_SET=0
 BRANCH_PREFIX=
 BRANCH_PREFIX_SET=0
-BRANCH_TYPE=chore
+BRANCH_TYPE=
 BRANCH_TYPE_SET=0
 TICKET_ID=
 TICKET_ID_SET=0
@@ -312,6 +312,10 @@ if [ "$KIND" = ship ]; then
       exit 1 ;;
     *) echo "error: --mode must be one of no-mistakes, direct-PR, local-only (got '$MODE')" >&2; exit 1 ;;
   esac
+  [ "$BRANCH_TYPE_SET" -eq 1 ] || {
+    echo "error: ship briefs require --branch-type <feature|bugfix|hotfix|release|chore|refactor|docs|test|ci>; choose the type explicitly at intake" >&2
+    exit 1
+  }
 elif [ "$MODE_SET" -eq 1 ]; then
   echo "error: --mode applies only to ship briefs; a scout delivers a report and a secondmate charter is not a delivery contract" >&2
   exit 1
@@ -401,12 +405,16 @@ if [ "$KIND" = ship ] && [ "$MODE" != local-only ] && [ "$PROJECT_DIR_SET" -eq 1
   esac
 fi
 ID=${POS[0]}
-BRANCH=$(fm_branch_resolve_name "$ID" "$BRANCH_TYPE" "$TICKET_ID" "$BRANCH_PREFIX") || exit 1
-if ! fm_branch_valid "$BRANCH"; then
-  echo "error: invalid ship branch '$BRANCH'; expected <type>/<lowercase-kebab-slug> under 60 characters with no '..' or '.lock' suffix" >&2
-  exit 1
+BRANCH=
+BRANCH_Q=
+if [ "$KIND" = ship ]; then
+  BRANCH=$(fm_branch_resolve_name "$ID" "$BRANCH_TYPE" "$TICKET_ID" "$BRANCH_PREFIX") || exit 1
+  if ! fm_branch_valid "$BRANCH"; then
+    echo "error: invalid ship branch '$BRANCH'; expected <type>/<lowercase-kebab-slug> under 60 characters with no '..' or '.lock' suffix" >&2
+    exit 1
+  fi
+  printf -v BRANCH_Q '%q' "$BRANCH"
 fi
-printf -v BRANCH_Q '%q' "$BRANCH"
 
 if [ "$KIND" = secondmate ] && [ "$HERDR_LAB" -eq 1 ]; then
   echo "error: --herdr-lab applies only to crewmate ship or scout briefs" >&2

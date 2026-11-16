@@ -35,7 +35,7 @@
 # no-mistakes-prod-only is a registry policy rather than a task mode and is refused.
 # The printed ship branch follows the same naming contract as a scaffolded ship
 # brief (bin/fm-branch-lib.sh): --branch-type selects one of the nine
-# conventional types (default chore), --ticket-id prefixes the normalized slug,
+# conventional types (required explicitly), --ticket-id prefixes the normalized slug,
 # and --branch-prefix overrides the selected type with a registered type.
 # A scout spawned on a named base records base_branch= in its meta; promotion
 # keeps that base as the ship's starting point and pull-request target, and
@@ -47,7 +47,7 @@
 # binding and bin/fm-dod-lib.sh owns what it changes for the worker, including
 # the refusal of a forge on local-only. A forge=external project is refused
 # outright, because its push guard is installed only by a ship spawn.
-# Usage: fm-promote.sh <task-id> --mode <no-mistakes|direct-PR|local-only> --yolo <on|off> [--branch-type <type>] [--ticket-id <id>] [--branch-prefix <type-prefix>] [--upstream-consent <host>/<owner>/<repo>]
+# Usage: fm-promote.sh <task-id> --mode <no-mistakes|direct-PR|local-only> --yolo <on|off> --branch-type <type> [--ticket-id <id>] [--branch-prefix <type-prefix>] [--upstream-consent <host>/<owner>/<repo>]
 # --upstream-consent records the captain's one-off approval for this task to
 # publish to firstmate's own upstream repository; promotion applies the same
 # self-repository publication gate as bin/fm-spawn.sh (bin/fm-role-lib.sh), so
@@ -86,7 +86,7 @@ MODE=
 YOLO=
 BRANCH_PREFIX=
 BRANCH_PREFIX_SET=0
-BRANCH_TYPE=chore
+BRANCH_TYPE=
 BRANCH_TYPE_SET=0
 TICKET_ID=
 TICKET_ID_SET=0
@@ -145,6 +145,10 @@ fi
 }
 [ "$YOLO_SET" -eq 1 ] || {
   echo "error: promotion requires --yolo <on|off>; it is this task's merge authority, not a project lookup" >&2
+  exit 1
+}
+[ "$BRANCH_TYPE_SET" -eq 1 ] || {
+  echo "error: promotion requires --branch-type <feature|bugfix|hotfix|release|chore|refactor|docs|test|ci>; choose the type explicitly from the scout findings" >&2
   exit 1
 }
 case "$MODE" in

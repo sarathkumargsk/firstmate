@@ -1828,11 +1828,12 @@ It uses the same live secondmate discovery and propagation helper as bootstrap; 
 ## Ship branch naming
 
 Firstmate creates task branches as `<type>/<slug>`, using one of `feature`, `bugfix`, `hotfix`, `release`, `chore`, `refactor`, `docs`, `test`, or `ci`.
-Intake selects the type from the work; when no type is supplied, scripts use `chore`.
+Intake selects and supplies the type explicitly to ship briefs and scout promotions. `chore` is available for maintenance, but scripts do not choose it implicitly. Ship spawn reads the selected type from the brief's `Ship branch:` line and checks any naming flags against it.
 Task ids become lowercase kebab-case slugs, optional ticket ids appear first, and the full branch name is kept below 60 characters.
 Names outside the convention, names containing `..`, names ending in `.lock`, and names 60 characters or longer are refused.
 
-The optional `branch=<type>` token on a `data/projects.md` row overrides the type selected for a task.
+The optional `branch=<type>` token on a `data/projects.md` row overrides the type selected for a task. Its value must be one of the nine supported types, optionally followed by `/`; free-form prefixes are refused with an instruction to correct `data/projects.md`.
+Remove legacy free-form values such as `branch=fm/` or `branch=sarath/` to use the task-selected type, or replace them with a supported type. A previously accepted empty `branch=` value, which meant a bare task-id branch, is invalid and must also be removed or replaced.
 Use `bin/fm-project-mode.sh --branch-prefix <project>` to read it; an empty result means there is no override.
 `bin/fm-branch-lib.sh` owns the validator and derivation, while `bin/fm-brief.sh`, `bin/fm-spawn.sh`, and `bin/fm-promote.sh` own their accepted flags.
 Existing tasks continue using the branch recorded in their task metadata, including legacy `fm/` branches.

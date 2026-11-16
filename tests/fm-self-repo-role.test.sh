@@ -514,7 +514,7 @@ test_brief_consent_flag_bounds() {
   brief="$home/data/brief-consent-ok/brief.md"
 
   out=$(FM_HOME="$home" FM_CONFIG_OVERRIDE="$home/config" FM_DATA_OVERRIDE="$home/data" \
-    "$BRIEF" brief-consent-bad some-proj --mode direct-PR --upstream-consent 'not a scope' 2>&1); rc=$?
+    "$BRIEF" brief-consent-bad some-proj --mode direct-PR --branch-type chore --upstream-consent 'not a scope' 2>&1); rc=$?
   expect_code 1 "$rc" "an invalid consent scope must be refused"
   assert_contains "$out" "must be <host>/<owner>/<repo>" "an invalid consent scope must name the schema"
 
@@ -524,12 +524,12 @@ test_brief_consent_flag_bounds() {
   assert_contains "$out" "applies only to ship briefs" "a scout consent refusal must name the boundary"
 
   out=$(FM_HOME="$home" FM_CONFIG_OVERRIDE="$home/config" FM_DATA_OVERRIDE="$home/data" \
-    "$BRIEF" brief-consent-local some-proj --mode local-only --upstream-consent github.com/a/b 2>&1); rc=$?
+    "$BRIEF" brief-consent-local some-proj --mode local-only --branch-type chore --upstream-consent github.com/a/b 2>&1); rc=$?
   expect_code 1 "$rc" "local-only must refuse a consent it publishes nothing with"
   assert_contains "$out" "local-only" "a local-only consent refusal must name the mode"
 
   out=$(FM_HOME="$home" FM_CONFIG_OVERRIDE="$home/config" FM_DATA_OVERRIDE="$home/data" \
-    "$BRIEF" brief-consent-ok some-proj --mode direct-PR --upstream-consent GitHub.COM/KunChenGuid/FirstMate 2>&1); rc=$?
+    "$BRIEF" brief-consent-ok some-proj --mode direct-PR --branch-type chore --upstream-consent GitHub.COM/KunChenGuid/FirstMate 2>&1); rc=$?
   expect_code 0 "$rc" "a valid consent must scaffold (got: $out)"
   assert_grep "upstream-consent=github.com/kunchenguid/firstmate" "$brief" \
     "the scaffolded brief must carry the normalized consent token"
@@ -540,14 +540,14 @@ test_brief_self_repo_pre_gate() {
   local home out rc
   home=$(make_role_home brief-selfrepo)
   out=$(FM_HOME="$home" FM_CONFIG_OVERRIDE="$home/config" FM_DATA_OVERRIDE="$home/data" \
-    "$BRIEF" brief-selfrefuse some-proj --mode direct-PR --project "$ROOT" 2>&1); rc=$?
+    "$BRIEF" brief-selfrefuse some-proj --mode direct-PR --branch-type chore --project "$ROOT" 2>&1); rc=$?
   expect_code 1 "$rc" "a user home must be refused a publishing brief for firstmate itself"
   assert_contains "$out" "user/operator" "the refusal must name the role"
   assert_contains "$out" "no publication authority" "the refusal must name the missing grant"
 
   if [ -n "$PUB_TARGET" ]; then
     out=$(FM_HOME="$home" FM_CONFIG_OVERRIDE="$home/config" FM_DATA_OVERRIDE="$home/data" \
-      "$BRIEF" brief-selfconsent some-proj --mode direct-PR --project "$ROOT" \
+      "$BRIEF" brief-selfconsent some-proj --mode direct-PR --branch-type chore --project "$ROOT" \
       --upstream-consent "$PUB_TARGET" 2>&1); rc=$?
     expect_code 0 "$rc" "recorded consent must let the same scaffold through (got: $out)"
     assert_grep "upstream-consent=$PUB_TARGET" "$home/data/brief-selfconsent/brief.md" \
@@ -557,7 +557,7 @@ test_brief_self_repo_pre_gate() {
   home=$(make_role_home brief-maint "maintainer ${PUB_TARGET:-github.com/x/y}")
   if [ -n "$PUB_TARGET" ]; then
     out=$(FM_HOME="$home" FM_CONFIG_OVERRIDE="$home/config" FM_DATA_OVERRIDE="$home/data" \
-      "$BRIEF" brief-selfmaint some-proj --mode direct-PR --project "$ROOT" 2>&1); rc=$?
+      "$BRIEF" brief-selfmaint some-proj --mode direct-PR --branch-type chore --project "$ROOT" 2>&1); rc=$?
     expect_code 0 "$rc" "a matching maintainer home must scaffold a self-repo publishing brief (got: $out)"
   fi
   pass "fm-brief.sh: --project applies the self-repository gate at scaffold time"
@@ -578,7 +578,7 @@ write_ship_brief() {  # <home> <id> [<contract-extras>]
   mkdir -p "$home/data/$id"
   {
     printf 'You are a crewmate.\n\n# Task\n## Captain'\''s intent\nExercise the role gate.\n\n## Firstmate spec\nVerify the boundary.\n\n# Definition of done\n'
-    printf 'Delivery contract: mode=no-mistakes%s\nShip branch: fm/%s\n' "$extras" "$id"
+    printf 'Delivery contract: mode=no-mistakes%s\nShip branch: chore/%s\n' "$extras" "$id"
   } > "$home/data/$id/brief.md"
 }
 
@@ -683,7 +683,7 @@ test_promote_gate_on_self_repo() {
 
   out=$(FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
     FM_CONFIG_OVERRIDE="$home/config" \
-    "$PROMOTE" promote-r1 --mode direct-PR --yolo off 2>&1); rc=$?
+    "$PROMOTE" promote-r1 --mode direct-PR --yolo off --branch-type chore 2>&1); rc=$?
   expect_code 1 "$rc" "a user home must not promote a self-repo scout into a publishing ship"
   assert_contains "$out" "promotion refused for promote-r1" "the refusal must name the task"
   assert_contains "$out" "user/operator" "the refusal must name the role"
@@ -693,7 +693,7 @@ test_promote_gate_on_self_repo() {
   if [ -n "$PUB_TARGET" ]; then
     out=$(FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
       FM_CONFIG_OVERRIDE="$home/config" \
-      "$PROMOTE" promote-r1 --mode direct-PR --yolo off --upstream-consent "$PUB_TARGET" 2>&1); rc=$?
+      "$PROMOTE" promote-r1 --mode direct-PR --yolo off --branch-type chore --upstream-consent "$PUB_TARGET" 2>&1); rc=$?
     expect_code 0 "$rc" "recorded consent must let the same promotion through (got: $out)"
     assert_grep 'upstream_consent=' "$meta" "the promoted task record must carry the consent"
     assert_grep "upstream-consent=$PUB_TARGET" "$home/data/promote-r1/ship-instructions.md" \
