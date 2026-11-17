@@ -146,7 +146,11 @@ make_spawn_case() {
 # environment enables or disables trace context.
 run_spawn() {
   local home=$1 wt=$2 fakebin=$3 launchlog=$4
+  local arg add_branch=1
   shift 4
+  for arg in "$@"; do
+    case $arg in --relaunch|--scout|--secondmate) add_branch=0 ;; esac
+  done
   : > "$launchlog"
   # A claude spawn pre-registers workspace trust in the launching user's own
   # store (bin/fm-claude-trust.sh), so it runs against a throwaway HOME;
@@ -162,7 +166,7 @@ run_spawn() {
     FM_FAKE_TRACE_METADATA_APPEND_FAIL="${FM_FAKE_TRACE_METADATA_APPEND_FAIL:-0}" \
     FM_FAKE_META_PATH="$home/state/$1.meta" \
     FM_FAKE_LAUNCH_LOG="$launchlog" PATH="$fakebin:$PATH" \
-    "$SPAWN" "$@" --mode no-mistakes --yolo off 2>&1
+    "$SPAWN" "$@" --mode no-mistakes --yolo off $([ "$add_branch" = 1 ] && printf '%s' '--branch-type chore') 2>&1
 }
 
 # Same, but with an explicit FM_TRACE_CONTEXT override, to prove the env decides.
@@ -180,7 +184,7 @@ run_spawn_tc() {
     FM_PROJECTS_OVERRIDE="$home/projects" FM_CONFIG_OVERRIDE="$home/config" \
     FM_SPAWN_NO_GUARD=1 FM_FAKE_PANE_PATH="$wt" TMUX="fake,1,0" \
     FM_FAKE_LAUNCH_LOG="$launchlog" PATH="$fakebin:$PATH" \
-    "$SPAWN" "$@" --mode no-mistakes --yolo off 2>&1
+    "$SPAWN" "$@" --mode no-mistakes --yolo off --branch-type chore 2>&1
 }
 
 start_trace_session() {
@@ -281,7 +285,7 @@ run_two_level() {
     FM_PROJECTS_OVERRIDE="$sm/projects" FM_CONFIG_OVERRIDE="$sm/config" \
     FM_SPAWN_NO_GUARD=1 FM_FAKE_PANE_PATH="$wwt" TMUX="fake,1,0" \
     FM_FAKE_LAUNCH_LOG="$wlog" PATH="$wfake:$PATH" \
-    "$SPAWN" "$worker_id" "$wproj" --mode no-mistakes --yolo off >/dev/null 2>&1 || true
+    "$SPAWN" "$worker_id" "$wproj" --mode no-mistakes --yolo off --branch-type chore >/dev/null 2>&1 || true
 
   TL_WORKER_TP=$(meta_traceparent "$sm/state/$worker_id.meta")
   TL_SM_FILE=absent
