@@ -2,7 +2,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { resolve } from "node:path";
 import { encodeFirstmateOperationalInput } from "./lib/fm-operational-input.js";
-import { contextDirectory, createTurnEndLatch, promptSession, setupEventSubscription } from "./lib/fm-opencode2.js";
+import { contextDirectory, createTurnEndLatch, promptSession, sessionInRoot, setupEventSubscription } from "./lib/fm-opencode2.js";
 
 // Supervision host: a home opted in with config/supervision-host
 // (docs/configuration.md "Supervision host" owns the gate, which
@@ -15,7 +15,11 @@ import { contextDirectory, createTurnEndLatch, promptSession, setupEventSubscrip
 // line as soon as it is verified, so readiness and the handling handoff work
 // as they do for the arm, with a longer readiness budget for the host's own
 // startup. On a home that does not run the host nothing below changes.
-const COORDINATOR_KEY = "__firstmateOpenCodeWatchArm";
+// The turn-end guard reaches this plugin through a process-wide registry keyed
+// by location, because one OpenCode 2 server loads every location's plugins
+// into one process and a single shared entry would hand the guard whichever
+// home loaded last.
+const COORDINATORS_KEY = "__firstmateOpenCodeWatchArms";
 // 35s on Windows so the budget stays above arm's MSYS confirm default (30s in
 // bin/fm-watch-arm.sh): a slow but successful Git Bash cold start must not be
 // SIGTERMed mid-confirmation. Conditioned on win32 so other platforms keep 12s.
@@ -30,6 +34,10 @@ const REARM_RETRY_MAX_MS = positiveInteger("FM_WATCH_REARM_RETRY_MAX_MS", 4000);
 const REARM_RETRY_LIMIT = positiveInteger("FM_WATCH_REARM_RETRY_LIMIT", 5);
 
 let child = null;
+// OpenCode 2 evaluates this module once per server process and calls setup
+// once per location; a reload cleans up every setup of the old module.
+let liveSetups = 0;
+let disposed = false;
 let armStatus = "idle";
 let retryTimer = null;
 let retryFailures = 0;
@@ -39,6 +47,11 @@ let armClose = new WeakMap();
 let armReadiness = new WeakMap();
 let armRecovery = new WeakMap();
 let armHostMode = new WeakMap();
+
+function registerCoordinator(location, ensureArmed) {
+  const coordinators = (globalThis[COORDINATORS_KEY] ??= new Map());
+  coordinators.set(location, { ensureArmed });
+}
 
 function positiveInteger(name, fallback) {
   const value = Number(process.env[name]);
@@ -400,6 +413,7 @@ async function scheduleRetry(paths, sessionID, client, reason, predecessorArmPid
   setArmStatus("retrying");
   const timer = setTimeout(() => {
     if (retryTimer === timer) retryTimer = null;
+    if (disposed) return;
     void ensureArm(paths, sessionID, client, predecessorArmPid).then((status) => {
       if (["armed", "starting", "wake"].includes(status)) return;
       surfaceFailure(paths, client, sessionID, `watcher: FAILED - OpenCode could not launch a continuity retry (${status})`);
@@ -469,6 +483,12 @@ function spawnArm(paths, sessionID, client, predecessorArmPid = "") {
     settled = true;
     resolveClosed();
     releaseChild();
+    // An unloaded module must not compete with its reloaded successor; the
+    // successor's --restart arm resurfaces any durable wake this one held.
+    if (disposed) {
+      settleReadiness("failed");
+      return;
+    }
     const classification = classifyArmClose(paths, hostMode, stdout, stderr, code, signal);
     settleReadiness(classification.kind === "actionable" ? "wake" : "failed");
     const predecessor = String(armChild.pid ?? "");
@@ -508,6 +528,7 @@ function spawnArm(paths, sessionID, client, predecessorArmPid = "") {
     resolveClosed();
     releaseChild();
     settleReadiness("failed");
+    if (disposed) return;
     if (restorationInFlight) {
       setArmStatus("failed");
       return;
@@ -524,7 +545,7 @@ function spawnArm(paths, sessionID, client, predecessorArmPid = "") {
 }
 
 async function beginArm(paths, sessionID, client, predecessorArmPid) {
-  if (!sessionID) return { status: "skipped", armChild: null };
+  if (!sessionID || disposed) return { status: "skipped", armChild: null };
   if (!(await isPrimaryRoot(paths.root, paths.home))) return { status: "not-primary", armChild: null };
   if (!(await sessionOwnsLock(paths))) return { status: "read-only", armChild: null };
   if (child) return { status: "existing", armChild: child };
@@ -560,9 +581,7 @@ async function ensureArm(paths, sessionID, client, predecessorArmPid = "", inclu
 export const FmPrimaryWatchArm = async ({ client, directory, worktree }) => {
   const root = worktree ? resolvePath(worktree) : await resolveRoot(directory);
   const paths = effectivePaths(root);
-  globalThis[COORDINATOR_KEY] = {
-    ensureArmed: (sessionID, activeClient) => ensureArm(paths, sessionID, activeClient ?? client),
-  };
+  registerCoordinator(root, (sessionID, activeClient) => ensureArm(paths, sessionID, activeClient ?? client));
 
   return {
     event: async ({ event }) => {
@@ -577,16 +596,16 @@ export const FmPrimaryWatchArm = async ({ client, directory, worktree }) => {
 function installWatchArm(ctx) {
   const anchor = contextDirectory(ctx);
   const transport = { __ctx: ctx };
-  let pathsPromise = null;
-  const getPaths = () => (pathsPromise ??= resolveRoot(anchor).then(effectivePaths));
-  globalThis[COORDINATOR_KEY] = {
-    ensureArmed: async (sessionID, activeClient) => ensureArm(await getPaths(), sessionID, activeClient ?? transport),
-  };
+  let rootPromise = null;
+  const getRoot = () => (rootPromise ??= resolveRoot(anchor));
+  const getPaths = async () => effectivePaths(await getRoot());
+  registerCoordinator(anchor, async (sessionID, activeClient) => ensureArm(await getPaths(), sessionID, activeClient ?? transport));
 
   const latch = createTurnEndLatch();
   setupEventSubscription(ctx, async (event) => {
     const sessionID = latch(event);
     if (!sessionID) return;
+    if (!(await sessionInRoot(ctx, sessionID, await getRoot(), resolveRoot))) return;
     void ensureArm(await getPaths(), sessionID, transport);
   });
 }
@@ -596,5 +615,11 @@ export default {
   server: FmPrimaryWatchArm,
   setup(ctx) {
     installWatchArm(ctx);
+    liveSetups += 1;
+    disposed = false;
+    return () => {
+      liveSetups -= 1;
+      if (liveSetups === 0) disposed = true;
+    };
   },
 };

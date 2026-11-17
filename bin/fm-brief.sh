@@ -48,17 +48,11 @@
 # no-mistakes-prod-only is a registry policy, not a task mode; resolve it to one of
 # the three concrete modes at intake before calling this script.
 # --branch-type <type> is required and selects one of feature, bugfix, hotfix,
-# release, chore, refactor, docs, test, or ci. The branch is derived as
-# <type>/<normalized-task-id>, lowercased and truncated to keep the full name under
-# 60 characters. --ticket-id <id> puts a validated ticket such as ZA-812 first
-# in that slug. --branch-prefix <type-prefix> overrides the type while retaining
-# the normalized slug and optional ticket. Like --mode, this script never reads data/projects.md for it: the
-# registry's optional "branch=<prefix>" annotation (bin/fm-project-mode.sh's
-# header owns that format and its --branch-prefix query) is the captain's
-# standing per-project preference, and firstmate resolves it per task at intake
-# and passes the explicit flag. A prefix must be one of the nine accepted types.
-# Refused on --scout and --secondmate: a scout
-# makes no branch and a charter is not a delivery contract.
+# release, chore, refactor, docs, test, or ci. --ticket-id <id> puts a validated
+# ticket such as ZA-812 first in the normalized slug. --branch-prefix <type>
+# overrides the selected type. The project registry's optional branch=<type>
+# annotation is resolved by firstmate at intake and passed explicitly; this
+# script never reads data/projects.md. Refused on scouts and secondmates.
 # --base-branch <branch> starts the task from origin's <branch> instead of the
 # repository default, for work that belongs on a named integration, feature, or
 # release branch. It writes a "Base branch: <branch>" line under `# Setup`, which
@@ -78,6 +72,14 @@
 # on `external` that rule names no forge CLI, because the home's review tool is
 # the only publishing tool. A forge on --mode local-only is refused, because that
 # mode publishes nothing, and `external` also refuses no-mistakes.
+# --pr names who writes the pull request's title and body, defaults to auto, and
+# is the explicit task-side form of the registry's `pr=manual` token exactly as
+# --forge is of `forge=`: read from data/projects.md at intake and passed here,
+# never looked up or inferred, and bin/fm-spawn.sh refuses a brief that
+# disagrees with the registry. `manual` renders a no-mistakes brief whose worker
+# writes the PR text itself with the pipeline's pr and ci steps skipped, and
+# records " pr=manual" on the Delivery contract line. bin/fm-dod-lib.sh's
+# fm_pr_text_valid owns where it is accepted: no-mistakes with no forge only.
 # --shape names how a forge=gerrit task is published, and only `squash` - one
 # change - is accepted: `stack` is refused until a stack can be watched by its
 # membership pinned when its watch is armed, because the merge watch follows one
@@ -99,7 +101,7 @@
 # The generated ship brief records the chosen mode as a fixed machine-readable
 # "Delivery contract: mode=<mode>" line, followed by " forge=gerrit shape=squash"
 # on Gerrit, " forge=forgejo" on Forgejo, or " forge=external" on an external
-# review tool. bin/fm-spawn.sh reads that line and
+# review tool, then " pr=manual" when the worker owns the PR text. bin/fm-spawn.sh reads that line and
 # refuses to launch a ship task whose explicit --mode or registered forge
 # disagrees, so an adjusted brief and the recorded task metadata cannot drift
 # apart.
@@ -108,12 +110,7 @@
 # infrastructure every lane shares - the no-mistakes daemon and the worktree pool
 # their own slot came from - so ship and scout cannot drift apart. A secondmate
 # charter omits it: that home allocates and returns slots for its own crewmates.
-# The ship branch is `<type>/<slug>`, resolved here so the worker never picks a
-# name at runtime. Ship callers must choose --branch-type from the nine
-# conventional types explicitly; --ticket-id adds a ticket to the slug; --branch-prefix is a
-# per-project override that must also be one of those types. bin/fm-branch-lib.sh
-# owns derivation, validation, and legacy branch reads.
-# --mode, --forge, and --shape are refused on scout and secondmate scaffolds: a
+# --mode, --forge, --shape, and --pr are refused on scout and secondmate scaffolds: a
 # scout's deliverable is a report rather than a merge, and a charter is not a
 # delivery contract.
 # There is no --yolo flag here. The worker never owns merge decisions, so yolo is
@@ -232,6 +229,8 @@ FORGE=none
 FORGE_SET=0
 SHAPE=
 SHAPE_SET=0
+PR_TEXT=auto
+PR_TEXT_SET=0
 UPSTREAM_CONSENT=
 UPSTREAM_CONSENT_SET=0
 PROJECT_DIR=
@@ -251,6 +250,7 @@ for a in "$@"; do
       base-branch) BASE_BRANCH=$a; BASE_BRANCH_SET=1 ;;
       forge) FORGE=$a; FORGE_SET=1 ;;
       shape) SHAPE=$a; SHAPE_SET=1 ;;
+      pr) PR_TEXT=$a; PR_TEXT_SET=1 ;;
       upstream-consent) UPSTREAM_CONSENT=$a; UPSTREAM_CONSENT_SET=1 ;;
       project) PROJECT_DIR=$a; PROJECT_DIR_SET=1 ;;
       *) echo "error: internal parser state for --$want_value" >&2; exit 1 ;;
@@ -275,6 +275,8 @@ for a in "$@"; do
     --base-branch=*) BASE_BRANCH=${a#--base-branch=}; BASE_BRANCH_SET=1 ;;
     --forge) want_value=forge ;;
     --forge=*) FORGE=${a#--forge=}; FORGE_SET=1 ;;
+    --pr) want_value="pr" ;;
+    --pr=*) PR_TEXT=${a#--pr=}; PR_TEXT_SET=1 ;;
     --shape) want_value=shape ;;
     --shape=*) SHAPE=${a#--shape=}; SHAPE_SET=1 ;;
     --upstream-consent) want_value="upstream-consent" ;;
@@ -289,14 +291,6 @@ for a in "$@"; do
   esac
 done
 [ -z "$want_value" ] || { echo "error: --$want_value requires a value" >&2; exit 1; }
-if [ "$BRANCH_PREFIX_SET" -eq 1 ] && [ -z "$BRANCH_PREFIX" ]; then
-  echo "error: --branch-prefix requires one of the supported branch types" >&2
-  exit 1
-fi
-if [ "$TICKET_ID_SET" -eq 1 ] && [ -z "$TICKET_ID" ]; then
-  echo "error: --ticket-id requires a non-empty ticket id such as ZA-812" >&2
-  exit 1
-fi
 
 # Ship delivery mode is an explicit per-task decision (AGENTS.md section 7). A
 # missing or invalid value stops the scaffold rather than silently defaulting.
@@ -321,6 +315,14 @@ elif [ "$MODE_SET" -eq 1 ]; then
   exit 1
 fi
 
+if [ "$BRANCH_PREFIX_SET" -eq 1 ] && [ -z "$BRANCH_PREFIX" ]; then
+  echo "error: --branch-prefix requires one of the supported branch types" >&2
+  exit 1
+fi
+if [ "$TICKET_ID_SET" -eq 1 ] && [ -z "$TICKET_ID" ]; then
+  echo "error: --ticket-id requires a non-empty ticket id such as ZA-812" >&2
+  exit 1
+fi
 # Branch naming options only make sense where a ship branch is created.
 if [ "$KIND" != ship ] && { [ "$BRANCH_PREFIX_SET" -eq 1 ] || [ "$BRANCH_TYPE_SET" -eq 1 ] || [ "$TICKET_ID_SET" -eq 1 ]; }; then
   echo "error: branch naming options apply only to ship briefs; a scout makes no branch and a secondmate charter is not a delivery contract" >&2
@@ -330,6 +332,7 @@ fi
 # typo or an impossible mode/forge pair stops here rather than reaching a worker.
 if [ "$KIND" = ship ]; then
   fm_forge_valid_for_mode "$FORGE" "$MODE" "fm-brief.sh --forge" || exit 1
+  fm_pr_text_valid "$PR_TEXT" "$MODE" "$FORGE" "fm-brief.sh --pr" || exit 1
   if [ "$FORGE" = gerrit ]; then
     [ "$SHAPE_SET" -eq 1 ] || SHAPE=squash
     case "$SHAPE" in
@@ -353,8 +356,8 @@ if [ "$KIND" = ship ]; then
   else
     FORGE_RULE_LINE="Use gh-axi for GitHub operations and chrome-devtools-axi for browser operations."
   fi
-elif [ "$FORGE_SET" -eq 1 ] || [ "$SHAPE_SET" -eq 1 ]; then
-  echo "error: --forge and --shape apply only to ship briefs; a scout delivers a report and a secondmate charter is not a delivery contract" >&2
+elif [ "$FORGE_SET" -eq 1 ] || [ "$SHAPE_SET" -eq 1 ] || [ "$PR_TEXT_SET" -eq 1 ]; then
+  echo "error: --forge, --shape, and --pr apply only to ship briefs; a scout delivers a report and a secondmate charter is not a delivery contract" >&2
   exit 1
 fi
 if [ "$BASE_BRANCH_SET" -eq 1 ]; then
@@ -630,7 +633,7 @@ HERDR_SECTION=$(printf '%s\n' \
 '' \
 'For tmux-based lab primaries, `bin/fm-lab-home.sh` owns the short private socket directory; do not place `TMUX_TMPDIR` under the lab home or worktree.' \
 'Use `LAB_HOME_HELPER='"$(shell_quote "$FM_ROOT/bin/fm-lab-home.sh")"'`, then `LAB_TMUX_DIR=$("$LAB_HOME_HELPER" tmux-dir "$FM_HOME")` and launch tmux with `TMUX_TMPDIR="$LAB_TMUX_DIR"`.' \
-'Your single EXIT cleanup trap must kill only the server addressed through that `TMUX_TMPDIR`, call `"$LAB_HOME_HELPER" teardown "$FM_HOME"`, and call the Herdr teardown below; do not install a second trap that replaces either cleanup.' \
+'Your single EXIT cleanup trap must kill only that server, by its explicit socket (`tmux -S "$LAB_TMUX_DIR/tmux-$(id -u)/<socket-name>" kill-server`) and only while that socket exists, never through `TMUX_TMPDIR` alone, which silently falls back to the default tmux server once the directory is gone; it must also call `"$LAB_HOME_HELPER" teardown "$FM_HOME"` and the Herdr teardown below; do not install a second trap that replaces either cleanup.' \
 '' \
 '1. Set `HERDR_LAB_HELPER='"$HERDR_LAB_HELPER"'` and generate the session name with `HERDR_LAB_SESSION=$("$HERDR_LAB_HELPER" name '"$ID"')`.' \
 '   Install the combined EXIT cleanup before provisioning, then provision only with `"$HERDR_LAB_HELPER" provision "$HERDR_LAB_SESSION"`.' \
@@ -640,11 +643,10 @@ HERDR_SECTION=$(printf '%s\n' \
 '   It re-checks refuse-default immediately before stop and again immediately before delete, and fails closed on ambiguity.' \
 '4. If an experiment requires a deliberate mid-run session stop, use only `"$HERDR_LAB_HELPER" stop "$HERDR_LAB_SESSION"`; it performs the same immediate refuse-default check.' \
 '5. Forbidden commands: direct `herdr server stop`, every other server-global operation such as `herdr server live-handoff` or reload/update operations, direct `herdr session stop`, direct `herdr session delete`, and any Herdr call scoped only by ambient or inline `HERDR_SESSION`.' \
-'6. The helper records the live default session before provisioning and verifies the identical fleet state after teardown.' \
-'   A missing, stopped, or changed default session is a hard tripwire failure, never a cleanup warning to ignore.' \
+'6. See the `bin/fm-herdr-lab.sh` header for the fleet-state tripwire and `FM_HERDR_LAB_FLEET_SESSION` rule.' \
+'   A missing, stopped, or changed fleet session is a hard tripwire failure, never a cleanup warning to ignore.' \
 '' \
-'Never bypass the helper, even for a read-only lifecycle probe or cleanup after failure.' \
-'The captain fleet uses the running `default` session.')
+'Never bypass the helper, even for a read-only lifecycle probe or cleanup after failure.')
 else
 IFS= read -r -d '' HERDR_SECTION <<'EOF' || true
 # Herdr lifecycle declaration - NOT ENABLED
@@ -731,7 +733,7 @@ The report is the only thing that survives, so anything worth keeping must be in
 
 # Rules
 1. Never push to any remote and never open a PR.
-2. Stay inside this worktree; the only files you may write outside it are the report and the status file below.
+2. Stay inside this worktree; outside it, write only the report and status file below, except for the task's empty-inventory attestation through \`fm-captain-hold.sh complete --none\`, exactly as specified under Definition of done.
 3. Use gh-axi for GitHub operations and chrome-devtools-axi for browser operations.
 4. Report status by appending one line:
    \`$STATUS_APPEND\`
@@ -759,6 +761,10 @@ Write your findings to \`$DATA/$ID/report.md\`.
 The report must stand alone: what you did, what you found, the evidence (commands run, output, file:line references), and what you recommend.
 $LAVISH_LINE
 Before reporting done, read and follow \`$FM_ROOT/.agents/skills/captain-hold-lifecycle/SKILL.md\` and pass its shared completion gate for the report and any visual review.
+Only when the reviewed inventory is empty, run \`FM_HOME=$(shell_quote "$FM_HOME") bash $(shell_quote "$FM_ROOT/bin/fm-captain-hold.sh") complete $(shell_quote "$ID") --none\`.
+This exception permits only that command, not direct metadata edits, another task, or any backlog write.
+If any captain call remains, ask firstmate to register the inventory and attest completion before you report done.
+If the command refuses, report the refusal to firstmate and stop rather than bypassing the completion gate.
 When the report is complete, append \`done [at=<epoch>]: {one-line conclusion}\` to the status file and stop.
 If your findings reveal work that should ship (e.g. you reproduced a bug and the fix is clear), say so in the report; firstmate may promote this task in place, and you would then receive mode-specific ship instructions as a follow-up message.
 EOF
@@ -786,7 +792,7 @@ case "$MODE" in
     ;;
 esac
 RULE1=$(fm_ship_rule_one "$MODE" "$ID" "$BRANCH" "$FORGE" "$BASE_BRANCH") || exit 1
-DOD=$(fm_dod_block "$MODE" "$ID" "$BRANCH" "$FORGE" "$BASE_BRANCH" "$UPSTREAM_CONSENT") || exit 1
+DOD=$(fm_dod_block "$MODE" "$ID" "$BRANCH" "$FORGE" "$BASE_BRANCH" "$UPSTREAM_CONSENT" "$PR_TEXT") || exit 1
 
 cat > "$BRIEF" <<EOF
 You are a crewmate: an autonomous worker agent managed by firstmate. Work on your own; do not wait for a human.
@@ -842,7 +848,9 @@ A correction edits only the wrong text: do not run \`$FM_ROOT/bin/fm-ensure-agen
 $DOD
 EOF
 append_brief_include
-if [ "$FORGE" = none ]; then
+if [ "$PR_TEXT" = manual ]; then
+  echo "scaffolded: $BRIEF (ship, mode=$MODE pr=manual; replace {TASK} and {FIRSTMATE_SPEC})"
+elif [ "$FORGE" = none ]; then
   echo "scaffolded: $BRIEF (ship, mode=$MODE; replace {TASK} and {FIRSTMATE_SPEC})"
 elif [ "$FORGE" = gerrit ]; then
   echo "scaffolded: $BRIEF (ship, mode=$MODE forge=$FORGE shape=$SHAPE; replace {TASK} and {FIRSTMATE_SPEC})"

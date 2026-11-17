@@ -59,6 +59,27 @@ function sessionIdentity(properties) {
   return { id, parentID };
 }
 
+// One OpenCode 2 server hosts every location in one process, and its event
+// stream carries every location's sessions while a turn-end event names only
+// the session. A primary plugin acts for a top-level session only when that
+// session's own location resolves to the plugin's root: session.get supplies
+// the location, and a session it cannot place reads as foreign. Arming,
+// prompting, or guarding a foreign session would hand this home's wakes to
+// another home's or a worker's session.
+export async function sessionInRoot(ctx, sessionID, root, resolveRoot) {
+  if (!sessionID || !root || !ctx?.session?.get) return false;
+  let session = null;
+  try {
+    session = await ctx.session.get({ sessionID });
+  } catch {
+    return false;
+  }
+  if (!session || session.parentID || session.parentId) return false;
+  const directory = session.location?.directory;
+  if (typeof directory !== "string" || !directory) return false;
+  return (await resolveRoot(directory)) === root;
+}
+
 // Every terminal execution event ends a turn: an interrupted or failed turn
 // must keep supervision exactly like a succeeded one. A server shutdown is not
 // a turn end the session can act on.

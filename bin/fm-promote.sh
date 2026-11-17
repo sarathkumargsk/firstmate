@@ -2,10 +2,6 @@
 # Promote a scout task to a ship task in place: the crewmate keeps its window,
 # worktree, and loaded context; only the contract changes. Flips kind= to ship in
 # state/<task-id>.meta so fm-teardown.sh applies the full ship-task teardown protection
-# again. After promoting, send the crewmate its ship instructions via fm-send.sh
-# (inventory scratch state, reset to a clean default-branch base, carry over only
-# intended fix changes, create branch <type>/<slug>, implement, then report done
-# according to this task's delivery mode).
 # again. Promotion also writes the crewmate's ship instructions to
 # data/<task-id>/ship-instructions.md, appends that same superseding contract to
 # data/<task-id>/brief.md for future relaunches, and prints the fm-send.sh command
@@ -26,20 +22,21 @@
 # never passes the provenance gate as the ask (bin/fm-dod-lib.sh).
 # A scout records no delivery posture, so promotion is where this task's delivery
 # contract is decided: --mode, --yolo, and the ship branch resolved from
-# --branch-prefix are written into the meta alongside the kind= flip. Firstmate resolves all three at promotion time, having just
+# --branch-type and optional --branch-prefix are written into the meta alongside the kind= flip. Firstmate resolves all three at promotion time, having just
 # read the scout's report (AGENTS.md section 7); data/projects.md holds the
 # captain's standing posture as context, and this script never looks that posture
 # up. The registry IS read for one thing only: the project's forge binding, which
 # is a project fact rather than a per-task decision, so promotion takes it from
 # there instead of asking firstmate to remember it.
 # no-mistakes-prod-only is a registry policy rather than a task mode and is refused.
-# The printed ship branch follows the same naming contract as a scaffolded ship
-# brief (bin/fm-branch-lib.sh): --branch-type selects one of the nine
-# conventional types (required explicitly), --ticket-id prefixes the normalized slug,
-# and --branch-prefix overrides the selected type with a registered type.
 # A scout spawned on a named base records base_branch= in its meta; promotion
 # keeps that base as the ship's starting point and pull-request target, and
 # refuses a mode that cannot carry one (bin/fm-dod-lib.sh fm_base_branch_valid).
+# In a home with config/spawn-base-primary-checkout, which can start a scout from
+# the primary checkout's default branch, a publishing mode without a named base
+# on a project with an origin remote is told to return to origin's default
+# branch instead, so commits origin has never received cannot ride along in
+# what it publishes.
 # There is no --forge flag here: the binding comes from the registry, and for a
 # task record naming no project it is none. bin/fm-brief.sh takes --forge instead
 # because that script has no registry access at all, and bin/fm-spawn.sh checks
@@ -47,6 +44,10 @@
 # binding and bin/fm-dod-lib.sh owns what it changes for the worker, including
 # the refusal of a forge on local-only. A forge=external project is refused
 # outright, because its push guard is installed only by a ship spawn.
+# The project's pr=manual binding is read the same way and applies to a promoted
+# no-mistakes mode only (bin/fm-project-mode.sh --pr; bin/fm-dod-lib.sh's
+# fm_pr_text_valid owns where it is accepted); the ship's Definition of done then
+# carries it.
 # Usage: fm-promote.sh <task-id> --mode <no-mistakes|direct-PR|local-only> --yolo <on|off> --branch-type <type> [--ticket-id <id>] [--branch-prefix <type-prefix>] [--upstream-consent <host>/<owner>/<repo>]
 # --upstream-consent records the captain's one-off approval for this task to
 # publish to firstmate's own upstream repository; promotion applies the same
@@ -85,14 +86,15 @@ CONFIG="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"
 MODE=
 YOLO=
 BRANCH_PREFIX=
-BRANCH_PREFIX_SET=0
 BRANCH_TYPE=
 BRANCH_TYPE_SET=0
 TICKET_ID=
 TICKET_ID_SET=0
+BRANCH_PREFIX_SET=0
 MODE_SET=0
 YOLO_SET=0
 FORGE=none
+PR_TEXT=auto
 UPSTREAM_CONSENT=
 UPSTREAM_CONSENT_SET=0
 POS=()
@@ -130,14 +132,6 @@ for a in "$@"; do
   esac
 done
 [ -z "$want_value" ] || { echo "error: --$want_value requires a value" >&2; exit 1; }
-if [ "$BRANCH_PREFIX_SET" -eq 1 ] && [ -z "$BRANCH_PREFIX" ]; then
-  echo "error: --branch-prefix requires one of the supported branch types" >&2
-  exit 1
-fi
-if [ "$TICKET_ID_SET" -eq 1 ] && [ -z "$TICKET_ID" ]; then
-  echo "error: --ticket-id requires a non-empty ticket id such as ZA-812" >&2
-  exit 1
-fi
 [ "${#POS[@]}" -ge 1 ] || { echo "usage: fm-promote.sh <task-id> --mode <no-mistakes|direct-PR|local-only> --yolo <on|off>" >&2; exit 1; }
 [ "$MODE_SET" -eq 1 ] || {
   echo "error: promotion requires --mode <no-mistakes|direct-PR|local-only>; decide it now from the scout's findings and the project's registered posture in data/projects.md" >&2
@@ -148,7 +142,7 @@ fi
   exit 1
 }
 [ "$BRANCH_TYPE_SET" -eq 1 ] || {
-  echo "error: promotion requires --branch-type <feature|bugfix|hotfix|release|chore|refactor|docs|test|ci>; choose the type explicitly from the scout findings" >&2
+  echo "error: promotion requires --branch-type <feature|bugfix|hotfix|release|chore|refactor|docs|test|ci>; choose the type explicitly at intake" >&2
   exit 1
 }
 case "$MODE" in
@@ -200,11 +194,16 @@ refuse_impossible_forge_posture || exit 1
 
 ID=${POS[0]}
 fm_task_id_creation_valid "$ID" || { echo "error: invalid task id" >&2; exit 2; }
-BRANCH=$(fm_branch_resolve_name "$ID" "$BRANCH_TYPE" "$TICKET_ID" "$BRANCH_PREFIX") || exit 1
-if ! fm_branch_valid "$BRANCH"; then
-  echo "error: invalid ship branch '$BRANCH'; expected <type>/<lowercase-kebab-slug> under 60 characters with no '..' or '.lock' suffix" >&2
+if [ "$BRANCH_PREFIX_SET" -eq 1 ] && [ -z "$BRANCH_PREFIX" ]; then
+  echo "error: --branch-prefix requires one of the supported branch types" >&2
   exit 1
 fi
+if [ "$TICKET_ID_SET" -eq 1 ] && [ -z "$TICKET_ID" ]; then
+  echo "error: --ticket-id requires a non-empty ticket id such as ZA-812" >&2
+  exit 1
+fi
+BRANCH=$(fm_branch_resolve_name "$ID" "$BRANCH_TYPE" "$TICKET_ID" "$BRANCH_PREFIX") || exit 1
+fm_branch_valid "$BRANCH" || { echo "error: invalid ship branch '$BRANCH'" >&2; exit 1; }
 printf -v BRANCH_Q '%q' "$BRANCH"
 CONTROL_LOCK="$STATE/.control-$ID.lock"
 CONTROL_LOCK_HELD=0
@@ -262,6 +261,11 @@ if [ -n "$PROMOTE_PROJECT" ]; then
   fi
   FORGE=${PROMOTE_STANDING_FORGE:-none}
   refuse_impossible_forge_posture || exit 1
+  if ! PROMOTE_STANDING_PR=$("$FM_ROOT/bin/fm-project-mode.sh" --pr "$PROMOTE_PROJECT_NAME"); then
+    echo "error: $ID cannot promote: the registry entry for $PROMOTE_PROJECT_NAME does not resolve to a delivery posture (see the refusal above); correct data/projects.md and promote again" >&2
+    exit 1
+  fi
+  [ "$MODE" != no-mistakes ] || PR_TEXT=${PROMOTE_STANDING_PR:-auto}
 fi
 BASE_BRANCH=$(sed -n 's/^base_branch=//p' "$META" | head -n 1)
 fm_base_branch_valid "$BASE_BRANCH" "$MODE" "$FORGE" "fm-promote.sh $ID" || exit 1
@@ -282,9 +286,20 @@ if [ "$MODE" != local-only ] && [ -n "$PROMOTE_PROJECT" ]; then
 fi
 PROMOTE_BASE_WORDS='default-branch base'
 [ -z "$BASE_BRANCH" ] || PROMOTE_BASE_WORDS="copy of the base branch \`$BASE_BRANCH\`"
+# A home with config/spawn-base-primary-checkout may have started this scout from
+# the primary checkout's default branch (bin/fm-spawn.sh's header owns that
+# rule), so a publishing mode is told which default branch to return to. Spawn
+# applies that rule only to a project with an origin remote, so a project
+# without one keeps the wording above.
+if [ -z "$BASE_BRANCH" ] && fm_mode_publishes "$MODE" && [ -e "$CONFIG/spawn-base-primary-checkout" ] \
+  && [ -n "$PROMOTE_PROJECT" ] && git -C "$PROMOTE_PROJECT" remote get-url origin >/dev/null 2>&1; then
+  PROMOTE_BASE_WORDS="copy of origin's default branch rather than the primary checkout's, which can carry commits origin has never received"
+fi
 # An unbound project keeps the exact wording it always had.
 PROMOTE_FORGE_WORDS=
 [ "$FORGE" = none ] || PROMOTE_FORGE_WORDS=" forge=$FORGE"
+PROMOTE_PR_WORDS=
+[ "$PR_TEXT" = auto ] || PROMOTE_PR_WORDS=" pr=$PR_TEXT"
 PROMOTE_CONSENT_WORDS=
 [ -z "$UPSTREAM_CONSENT" ] || PROMOTE_CONSENT_WORDS=" upstream-consent=$UPSTREAM_CONSENT"
 
@@ -335,7 +350,7 @@ EOF
 promote_delivery_contract() {
   cat <<EOF
 # Current delivery mode contract
-This task is now kind=ship with mode=$MODE$PROMOTE_FORGE_WORDS$PROMOTE_CONSENT_WORDS.
+This task is now kind=ship with mode=$MODE$PROMOTE_FORGE_WORDS$PROMOTE_PR_WORDS$PROMOTE_CONSENT_WORDS.
 This section supersedes every earlier brief instruction about delivery mode.
 These current ship instructions supersede the scout delivery rules and report-based Definition of done.
 Any earlier "Never push" or scout-only delivery language in this file is superseded.
@@ -353,7 +368,7 @@ EOF
     printf '%s\n' "$PROMOTION_ASK_USER_BLOCK"
   fi
   printf '\n'
-  fm_dod_block "$MODE" "$ID" "$BRANCH" "$FORGE" "$BASE_BRANCH" "$UPSTREAM_CONSENT"
+  fm_dod_block "$MODE" "$ID" "$BRANCH" "$FORGE" "$BASE_BRANCH" "$UPSTREAM_CONSENT" "$PR_TEXT"
 }
 mkdir -p "$DATA/$ID"
 [ ! -d "$INSTRUCTIONS" ] || { echo "error: ship instructions path is a directory: $INSTRUCTIONS" >&2; exit 1; }
@@ -428,8 +443,8 @@ META_LOCK_HELD=0
 
 HOME_Q=$(printf '%q' "$FM_HOME")
 INSTRUCTIONS_Q=$(printf '%q' "$INSTRUCTIONS")
-echo "promoted $ID to ship mode=$MODE yolo=$YOLO$PROMOTE_FORGE_WORDS (teardown protection restored)"
-echo "wrote ship instructions for mode=$MODE$PROMOTE_FORGE_WORDS: $INSTRUCTIONS"
+echo "promoted $ID to ship mode=$MODE yolo=$YOLO$PROMOTE_FORGE_WORDS$PROMOTE_PR_WORDS (teardown protection restored)"
+echo "wrote ship instructions for mode=$MODE$PROMOTE_FORGE_WORDS$PROMOTE_PR_WORDS: $INSTRUCTIONS"
 echo "next: FM_HOME=$HOME_Q bin/fm-send.sh fm-$ID \"\$(cat $INSTRUCTIONS_Q)\""
 
 promote_print_rechain_hint() {
@@ -532,4 +547,4 @@ if [ -f "$FM_HOME/.fm-secondmate-home" ]; then
   fi
 elif fm_pf_relay_active "$FM_HOME"; then
   promote_print_rechain_hint "$FM_HOME" main "$ID"
- fi
+fi

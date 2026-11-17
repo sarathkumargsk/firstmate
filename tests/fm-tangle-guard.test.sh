@@ -156,7 +156,7 @@ run_spawn() {
   local home=$1 id=$2 proj=$3 pane=$4 fakebin=$5
   fm_test_spawn_brief "$home" "$id" brief
   fm_test_run_spawn "$home" "$pane" "$fakebin" \
-    "$id" "$proj" codex --mode no-mistakes --yolo off
+    "$id" "$proj" codex --mode no-mistakes --yolo off --branch-type chore
 }
 
 test_spawn_isolation_abort() {
@@ -263,7 +263,7 @@ run_spawn_record() {
   fm_test_spawn_brief "$home" "$id" brief
   FM_TMUX_REC="$rec" \
     fm_test_run_spawn "$home" "$pane" "$fakebin" \
-    "$id" "$proj" codex --mode no-mistakes --yolo off
+    "$id" "$proj" codex --mode no-mistakes --yolo off --branch-type chore
 }
 
 test_spawn_tmux_window_construction() {
@@ -278,7 +278,7 @@ test_spawn_tmux_window_construction() {
   git -C "$proj" worktree add -q --detach "$wt" >/dev/null 2>&1
 
   out=$(run_spawn_record "$home" rec-win-gg7 "$proj" "$wt" "$fakebin" "$rec"); status=$?
-  expect_code 0 "$status" "spawn into a genuine worktree should succeed"
+  expect_code 0 "$status" "spawn into a genuine worktree should succeed: $out"
   assert_contains "$out" "spawned rec-win-gg7" "recording spawn did not report success"
 
   # Bug 1 fix: append-form window creation (trailing colon on the session target).

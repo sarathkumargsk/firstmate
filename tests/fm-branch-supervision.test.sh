@@ -31,7 +31,7 @@ test_branch_prompt_is_byte_stable_and_above_cache_floor() {
   out_b=$(cd / && FM_HOME="$home_b" TZ=Australia/Eucla "$ROOT/bin/fm-branch-prompt.sh") \
     || fail "branch prompt generator failed for home B"
   sleep 1
-  out_c=$("$ROOT/bin/fm-branch-prompt.sh") || fail "branch prompt generator failed on re-run"
+  out_c=$(FM_HOME="$home_a" "$ROOT/bin/fm-branch-prompt.sh") || fail "branch prompt generator failed on re-run"
 
   [ "$out_a" = "$out_b" ] || fail "branch prompt differs across homes/cwd/timezone: prefix stability broken"
   [ "$out_a" = "$out_c" ] || fail "branch prompt differs across runs at different times: prefix stability broken"
@@ -70,6 +70,50 @@ test_branch_prompt_is_byte_stable_and_above_cache_floor() {
     *) fail "branch prompt lost the second-mate relay, signal-span, or stale-liveness rule" ;;
   esac
   pass "branch prompt is byte-stable across homes, cwd, timezone, and time, above the cache floor"
+}
+
+# A home adds its own rules through config/branch-prompt-include.md: absent or
+# blank leaves the prompt byte-identical, present text lands verbatim as the
+# last section, and an unusable path refuses with no prompt on stdout.
+test_branch_prompt_home_include_is_appended_last() {
+  local home config base out rc last_heading
+  home="$TMP_ROOT/prompt-include-home"
+  config="$home/config"
+  mkdir -p "$config"
+  base=$(FM_HOME="$TMP_ROOT/prompt-include-none" "$ROOT/bin/fm-branch-prompt.sh") || fail "branch prompt failed without a home"
+
+  out=$(FM_HOME="$home" "$ROOT/bin/fm-branch-prompt.sh") || fail "branch prompt failed without an include"
+  [ "$out" = "$base" ] || fail "an absent include changed the branch prompt"
+  printf ' \n\n' > "$config/branch-prompt-include.md"
+  out=$(FM_HOME="$home" "$ROOT/bin/fm-branch-prompt.sh") || fail "branch prompt failed with a blank include"
+  [ "$out" = "$base" ] || fail "a blank include changed the branch prompt"
+
+  # shellcheck disable=SC2016 # The include is literal text and must never expand.
+  printf '%s\n' 'Relaunch workers with `house-tool $(id)`.' > "$config/branch-prompt-include.md"
+  out=$(FM_HOME="$home" "$ROOT/bin/fm-branch-prompt.sh") || fail "branch prompt failed with an include"
+  case "$out" in
+    "$base"*) ;;
+    *) fail "the include did not leave the tracked prompt as an unchanged prefix" ;;
+  esac
+  # shellcheck disable=SC2016 # Literal include text.
+  assert_contains "$out" 'Relaunch workers with `house-tool $(id)`.' "branch prompt did not carry the include verbatim"
+  assert_contains "$out" "every other section of this prompt takes precedence" "include section lost its precedence line"
+  last_heading=$(printf '%s\n' "$out" | grep '^# ' | tail -n 1)
+  [ "$last_heading" = '# Home prompt additions' ] || fail "include was not the last section (got: $last_heading)"
+  [ "$(FM_HOME="$home" "$ROOT/bin/fm-branch-prompt.sh")" = "$out" ] || fail "branch prompt with an include is not byte-stable across runs"
+
+  out=$(FM_HOME="$home" FM_CONFIG_OVERRIDE="$TMP_ROOT/prompt-include-empty-config" "$ROOT/bin/fm-branch-prompt.sh") \
+    || fail "branch prompt failed under FM_CONFIG_OVERRIDE"
+  [ "$out" = "$base" ] || fail "FM_CONFIG_OVERRIDE did not select the config directory"
+
+  rm -f "$config/branch-prompt-include.md"
+  mkdir "$config/branch-prompt-include.md"
+  out=$(FM_HOME="$home" "$ROOT/bin/fm-branch-prompt.sh" 2>/dev/null); rc=$?
+  expect_code 1 "$rc" "an unusable include path must stop the branch prompt"
+  [ -z "$out" ] || fail "an unusable include still emitted a partial prompt"
+  out=$(FM_HOME="$home" "$ROOT/bin/fm-branch-prompt.sh" 2>&1 >/dev/null)
+  assert_contains "$out" "branch-prompt-include.md must be a readable regular file" "unusable include refusal did not name the file"
+  pass "fm-branch-prompt.sh: the home prompt include lands last, verbatim, and refuses an unusable path"
 }
 
 test_branch_prompt_routes_completed_scouts_through_guarded_cleanup() {
@@ -811,7 +855,7 @@ test_main_owned_actions_refuse_the_branch_actor() {
   [ "$status" -eq 6 ] || fail "branch fm-merge-local exited $status, not 6: $out"
 
   out=$(FM_HOME="$home" FM_ROOT_OVERRIDE="$root" FM_SUPERVISION_ACTOR=branch \
-    "$ROOT/bin/fm-spawn.sh" task-new --mode no-mistakes --yolo off 2>&1)
+    "$ROOT/bin/fm-spawn.sh" task-new --mode no-mistakes --yolo off --branch-type chore 2>&1)
   status=$?
   [ "$status" -eq 6 ] || fail "branch fm-spawn exited $status, not 6: $out"
   assert_contains "$out" "new-task spawn (fm-spawn) refused" "spawn refusal lost its action label"
@@ -1379,7 +1423,7 @@ test_away_record_relocates_main_owned_actions_to_the_branch() {
   fm_write_meta "$home/state/task-a.meta" "window=fm-task-a" "kind=ship"
   fm_write_meta "$home/state/mate-1.meta" "window=remote:mate-1" "kind=secondmate"
   out=$(FM_HOME="$home" FM_ROOT_OVERRIDE="$root" FM_SUPERVISION_ACTOR=branch \
-    "$ROOT/bin/fm-spawn.sh" task-new --mode no-mistakes --yolo off 2>&1)
+    "$ROOT/bin/fm-spawn.sh" task-new --mode no-mistakes --yolo off --branch-type chore 2>&1)
   status=$?
   [ "$status" -ne 6 ] || fail "branch fm-spawn still hit the partition under the record: $out"
   assert_contains "$out" "main is parked" "the spawn relocation did not announce itself"
@@ -1387,12 +1431,12 @@ test_away_record_relocates_main_owned_actions_to_the_branch() {
   assert_not_contains "$out" "caps concurrent workers" "one ordinary task under a cap of 2 was refused"
   fm_write_meta "$home/state/task-b.meta" "window=fm-task-b" "kind=ship"
   out=$(FM_HOME="$home" FM_ROOT_OVERRIDE="$root" FM_SUPERVISION_ACTOR=branch \
-    "$ROOT/bin/fm-spawn.sh" task-new --mode no-mistakes --yolo off 2>&1)
+    "$ROOT/bin/fm-spawn.sh" task-new --mode no-mistakes --yolo off --branch-type chore 2>&1)
   status=$?
   [ "$status" -eq 1 ] || fail "spend-cap refusal exited $status, not 1: $out"
   assert_contains "$out" "caps concurrent workers at 2 and 2 ordinary task(s) are live" "spend-cap refusal lost its count"
   # The cap binds main too: the posture, not the actor, is what caps spend.
-  out=$(FM_HOME="$home" FM_ROOT_OVERRIDE="$root" "$ROOT/bin/fm-spawn.sh" task-new --mode no-mistakes --yolo off 2>&1)
+  out=$(FM_HOME="$home" FM_ROOT_OVERRIDE="$root" "$ROOT/bin/fm-spawn.sh" task-new --mode no-mistakes --yolo off --branch-type chore 2>&1)
   status=$?
   [ "$status" -eq 1 ] || fail "main spawn past the cap exited $status, not 1: $out"
   assert_contains "$out" "caps concurrent workers" "main was not held to the spend cap"
@@ -1418,7 +1462,7 @@ fi
 exec "\$REAL" "\$@"
 WRAPPER
   chmod +x "$root/bin/fm-afk-contract.sh"
-  out=$(FM_HOME="$home" FM_ROOT_OVERRIDE="$root" "$root/bin/fm-spawn.sh" task-new --mode no-mistakes --yolo off 2>&1) || true
+  out=$(FM_HOME="$home" FM_ROOT_OVERRIDE="$root" "$root/bin/fm-spawn.sh" task-new --mode no-mistakes --yolo off --branch-type chore 2>&1) || true
   assert_not_contains "$out" "caps concurrent workers" "a field-read after archive refused a main spawn via the spend cap"
   assert_not_contains "$out" "no readable spend cap" "a field-read after archive killed the spawn instead of restoring attended behavior"
   FM_HOME="$home" "$ROOT/bin/fm-afk-contract.sh" enter --spend 2 >/dev/null || fail "away re-entry failed"
@@ -1430,7 +1474,7 @@ WRAPPER
   [ "$status" -eq 6 ] || fail "an archived record still relocated the merge (exit $status): $out"
   assert_contains "$out" "$refusal" "the attended refusal changed after archive"
   assert_not_contains "$out" "main is parked" "an archived record still announced a relocation"
-  out=$(FM_HOME="$home" "$ROOT/bin/fm-spawn.sh" task-new --mode no-mistakes --yolo off 2>&1)
+  out=$(FM_HOME="$home" "$ROOT/bin/fm-spawn.sh" task-new --mode no-mistakes --yolo off --branch-type chore 2>&1)
   assert_not_contains "$out" "caps concurrent workers" "the spend cap outlived the record"
   # A record that no longer validates is absence too.
   printf 'version: 99\n' > "$home/state/.afk-contract"
@@ -1438,7 +1482,7 @@ WRAPPER
   status=$?
   [ "$status" -eq 6 ] || fail "an invalid record relocated the merge (exit $status): $out"
   assert_contains "$out" "$refusal" "the attended refusal changed under an invalid record"
-  out=$(FM_HOME="$home" FM_ROOT_OVERRIDE="$root" "$ROOT/bin/fm-spawn.sh" task-new --mode no-mistakes --yolo off 2>&1)
+  out=$(FM_HOME="$home" FM_ROOT_OVERRIDE="$root" "$ROOT/bin/fm-spawn.sh" task-new --mode no-mistakes --yolo off --branch-type chore 2>&1)
   assert_not_contains "$out" "caps concurrent workers" "an invalid record refused a main spawn via the spend cap"
   assert_not_contains "$out" "no readable spend cap" "an invalid record refused a main spawn for an unreadable cap"
   # Quiet mode's record is a present captain (bin/fm-afk-contract.sh AWAY OR
@@ -1476,20 +1520,20 @@ EOF
   FM_HOME="$home" "$ROOT/bin/fm-afk-contract.sh" enter --spend 2 >/dev/null || fail "away entry failed"
 
   out=$(FM_HOME="$home" FM_ROOT_OVERRIDE="$root" FM_SUPERVISION_ACTOR=branch \
-    "$ROOT/bin/fm-spawn.sh" task-arbitrary --mode no-mistakes --yolo off 2>&1)
+    "$ROOT/bin/fm-spawn.sh" task-arbitrary --mode no-mistakes --yolo off --branch-type chore 2>&1)
   status=$?
   [ "$status" -eq 1 ] || fail "an arbitrary branch spawn exited $status, not 1: $out"
   assert_contains "$out" "queued unblocked work" "an arbitrary id was dispatched under the record"
 
   out=$(FM_HOME="$home" FM_ROOT_OVERRIDE="$root" FM_SUPERVISION_ACTOR=branch \
-    "$ROOT/bin/fm-spawn.sh" task-queued --mode no-mistakes --yolo off 2>&1)
+    "$ROOT/bin/fm-spawn.sh" task-queued --mode no-mistakes --yolo off --branch-type chore 2>&1)
   status=$?
   assert_not_contains "$out" "queued unblocked work" "a queued item was refused as if it were arbitrary: $out"
   [ "$status" -ne 6 ] || fail "a queued branch spawn hit the partition: $out"
   assert_contains "$out" "main is parked" "the queued spawn lost its relocation note"
 
   out=$(FM_HOME="$home" FM_ROOT_OVERRIDE="$root" FM_SUPERVISION_ACTOR=branch \
-    "$ROOT/bin/fm-spawn.sh" task-inflight --mode no-mistakes --yolo off 2>&1)
+    "$ROOT/bin/fm-spawn.sh" task-inflight --mode no-mistakes --yolo off --branch-type chore 2>&1)
   status=$?
   [ "$status" -eq 1 ] || fail "an in-flight branch spawn exited $status, not 1: $out"
   assert_contains "$out" "queued unblocked work" "an in-flight row was dispatched by the away branch"
@@ -1524,14 +1568,14 @@ exec "\$REAL" "\$@"
 WRAPPER
   chmod +x "$root/bin/fm-afk-contract.sh"
   out=$(FM_HOME="$home" FM_ROOT_OVERRIDE="$root" FM_SUPERVISION_ACTOR=branch \
-    "$root/bin/fm-spawn.sh" task-queued --mode no-mistakes --yolo off 2>&1)
+    "$root/bin/fm-spawn.sh" task-queued --mode no-mistakes --yolo off --branch-type chore 2>&1)
   status=$?
   [ "$status" -eq 6 ] || fail "an archived-after-early-guard spawn exited $status, not 6: $out"
   assert_contains "$out" "the supervision branch never performs this action" \
     "archiving between the early guard and the gate did not restore the attended refusal"
 
   out=$(FM_HOME="$home" FM_ROOT_OVERRIDE="$root" \
-    "$ROOT/bin/fm-spawn.sh" task-arbitrary --mode no-mistakes --yolo off 2>&1)
+    "$ROOT/bin/fm-spawn.sh" task-arbitrary --mode no-mistakes --yolo off --branch-type chore 2>&1)
   assert_not_contains "$out" "queued unblocked work" "main's attended spawn was held to the branch queued-work gate"
   pass "relocated branch spawn admits only already-queued dispatchable work, including on a manual-backend home"
 }
@@ -1548,10 +1592,10 @@ test_quiet_record_never_caps_a_present_captains_spawn() {
   FM_AFK_MODE=quiet FM_HOME="$home" "$ROOT/bin/fm-afk-contract.sh" enter --spend 1 >/dev/null || fail "quiet entry failed"
   fm_write_meta "$home/state/task-a.meta" "window=fm-task-a" "kind=ship"
   fm_write_meta "$home/state/task-b.meta" "window=fm-task-b" "kind=ship"
-  out=$(FM_HOME="$home" FM_ROOT_OVERRIDE="$root" "$ROOT/bin/fm-spawn.sh" task-new --mode no-mistakes --yolo off 2>&1)
+  out=$(FM_HOME="$home" FM_ROOT_OVERRIDE="$root" "$ROOT/bin/fm-spawn.sh" task-new --mode no-mistakes --yolo off --branch-type chore 2>&1)
   assert_not_contains "$out" "caps concurrent workers" "a quiet record capped a present captain's spawn"
   FM_HOME="$home" "$ROOT/bin/fm-afk-contract.sh" enter --spend 1 >/dev/null 2>&1 || fail "away entry over quiet failed"
-  out=$(FM_HOME="$home" FM_ROOT_OVERRIDE="$root" "$ROOT/bin/fm-spawn.sh" task-new --mode no-mistakes --yolo off 2>&1)
+  out=$(FM_HOME="$home" FM_ROOT_OVERRIDE="$root" "$ROOT/bin/fm-spawn.sh" task-new --mode no-mistakes --yolo off --branch-type chore 2>&1)
   assert_contains "$out" "caps concurrent workers at 1 and 2 ordinary task(s) are live" "the away record's cap no longer binds"
   pass "a quiet-mode record never caps a present captain's spawn, while the away record's cap still binds"
 }
@@ -1593,7 +1637,7 @@ WRAPPER
   FM_HOME="$home" "$ROOT/bin/fm-afk-contract.sh" enter --spend 1 >/dev/null || fail "away entry failed"
 
   FM_HOME="$home" FM_ROOT_OVERRIDE="$root" \
-    "$root/bin/fm-spawn.sh" task-q1 --mode no-mistakes --yolo off \
+    "$root/bin/fm-spawn.sh" task-q1 --mode no-mistakes --yolo off --branch-type chore \
     > "$home/q1.out" 2>&1 &
   i=0
   while [ ! -f "$home/early-cap-passed" ]; do
@@ -1612,6 +1656,7 @@ WRAPPER
 }
 
 test_branch_prompt_is_byte_stable_and_above_cache_floor
+test_branch_prompt_home_include_is_appended_last
 test_branch_prompt_routes_completed_scouts_through_guarded_cleanup
 test_outcome_store_is_append_only_with_cursor_reads
 test_outcome_append_keeps_a_bounded_display_tail

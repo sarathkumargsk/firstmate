@@ -2,9 +2,10 @@ import { spawn } from "node:child_process";
 import { realpathSync } from "node:fs";
 import { resolve } from "node:path";
 import { encodeFirstmateOperationalInput } from "./lib/fm-operational-input.js";
-import { contextDirectory, createTurnEndLatch, promptSession, setupEventSubscription } from "./lib/fm-opencode2.js";
+import { contextDirectory, createTurnEndLatch, promptSession, sessionInRoot, setupEventSubscription } from "./lib/fm-opencode2.js";
 
-const COORDINATOR_KEY = "__firstmateOpenCodeWatchArm";
+// fm-primary-watch-arm.js owns this registry and its location keys.
+const COORDINATORS_KEY = "__firstmateOpenCodeWatchArms";
 
 function runProcess(command, args, input = "") {
   return new Promise((resolve) => {
@@ -49,8 +50,8 @@ function runGuard(root) {
   return runProcess(`${root}/bin/fm-turnend-guard.sh`, [], '{"stop_hook_active":false}');
 }
 
-async function letWatchArmRun(sessionID, client) {
-  const coordinator = globalThis[COORDINATOR_KEY];
+async function letWatchArmRun(location, sessionID, client) {
+  const coordinator = globalThis[COORDINATORS_KEY]?.get?.(location);
   if (!coordinator?.ensureArmed) return false;
   const status = await coordinator.ensureArmed(sessionID, client);
   return status === "armed" || status === "wake" || status === "failed";
@@ -69,7 +70,7 @@ export const FmPrimaryTurnendGuard = async ({ client, directory, worktree }) => 
 
       if (latch.consume(sessionID)) return;
 
-      if (await letWatchArmRun(sessionID, client)) return;
+      if (await letWatchArmRun(root, sessionID, client)) return;
 
       const result = await runGuard(root);
       if (result.code !== 2) return;
@@ -108,9 +109,11 @@ function installTurnendGuard(ctx) {
 
     if (latch.consume(sessionID)) return;
 
-    if (await letWatchArmRun(sessionID, null)) return;
-
     const root = await getRoot();
+    if (!(await sessionInRoot(ctx, sessionID, root, resolveRoot))) return;
+
+    if (await letWatchArmRun(anchor, sessionID, null)) return;
+
     const result = await runGuard(root);
     if (result.code !== 2) return;
 
