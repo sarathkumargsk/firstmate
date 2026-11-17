@@ -141,7 +141,7 @@ test_brief_assertion_precedes_branch() {
   assert_no_grep "they are identical in the primary checkout" "$brief" \
     "brief must not claim the primary checkout has identical git dirs"
   iso=$(grep -n 'launched in primary checkout, not an isolated worktree' "$brief" | head -1 | cut -d: -f1)
-  br=$(grep -nE 'git checkout -b (fix|feat|patch)/' "$brief" | head -1 | cut -d: -f1)
+  br=$(grep -nE 'git checkout -b (feature|bugfix|hotfix|release|chore|refactor|docs|test|ci)/' "$brief" | head -1 | cut -d: -f1)
   if [ -z "$iso" ] || [ -z "$br" ]; then
     fail "brief missing assertion ($iso) or branch step ($br)"
   fi

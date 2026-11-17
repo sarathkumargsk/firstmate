@@ -47,15 +47,19 @@ make_case() {  # <name> <on|off>
   HOME_DIR="$dir/home"
   PROJ_DIR="$dir/sample"
   TASK="$1-t1"
+  local branch_slug
+  branch_slug=$(printf '%s' "$TASK" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//')
   WT_DIR="$dir/wt"
   mkdir -p "$HOME_DIR/data/$TASK" "$HOME_DIR/projects" "$HOME_DIR/state" "$HOME_DIR/config" "$HOME_DIR/user-home"
   printf 'claude\n' > "$HOME_DIR/config/crew-harness"
   printf '%s\n' "$$" > "$HOME_DIR/state/.lock"
   touch "$HOME_DIR/state/.last-watcher-beat"
   [ "$2" = off ] || : > "$HOME_DIR/config/fleet-ledger"
-  fm_git_worktree "$PROJ_DIR" "$WT_DIR" "fm/$TASK"
+  fm_git_worktree "$PROJ_DIR" "$WT_DIR" "chore/$branch_slug"
+  fm_write_meta "$HOME_DIR/state/$TASK.meta" "branch=chore/$branch_slug"
   cat > "$HOME_DIR/data/$TASK/brief.md" <<EOF
 # Task
+Ship branch: chore/$branch_slug
 ## Captain's intent
 Exercise the fleet ledger for $TASK.
 

@@ -2065,29 +2065,6 @@ fm_task_id_creation_valid "$ID" || {
   echo "error: invalid task id" >&2
   exit 2
 }
-if [ "$RELAUNCH" -eq 0 ] && [ "$KIND" = ship ]; then
-  REQUESTED_BRANCH_TYPE=$BRANCH_TYPE
-  BRIEF_BRANCH=$(sed -n 's/^Ship branch: //p' "$DATA/$ID/brief.md" 2>/dev/null | head -n 1)
-  if [ -z "$BRIEF_BRANCH" ]; then
-    echo "error: $DATA/$ID/brief.md records no ship branch; regenerate it with an explicit --branch-type <feature|bugfix|hotfix|release|chore|refactor|docs|test|ci> before spawning" >&2
-    exit 1
-  fi
-  BRANCH_TYPE=${BRIEF_BRANCH%%/*}
-  if [ "$BRANCH_TYPE_SET" -eq 1 ] || [ "$BRANCH_PREFIX_SET" -eq 1 ] || [ "$TICKET_ID_SET" -eq 1 ]; then
-    RESOLVE_TYPE=$BRANCH_TYPE
-    [ "$BRANCH_TYPE_SET" -eq 0 ] || RESOLVE_TYPE=$REQUESTED_BRANCH_TYPE
-    EXPECTED_BRANCH=$(fm_branch_resolve_name "$ID" "$RESOLVE_TYPE" "$TICKET_ID" "$BRANCH_PREFIX") || exit 1
-    if [ "$EXPECTED_BRANCH" != "$BRIEF_BRANCH" ]; then
-      echo "error: branch mismatch for $ID: the brief says branch=$BRIEF_BRANCH but this spawn naming selection resolves to branch=$EXPECTED_BRANCH" >&2
-      exit 1
-    fi
-  fi
-  BRANCH=$BRIEF_BRANCH
-  if ! fm_branch_valid "$BRANCH"; then
-    echo "error: invalid ship branch '$BRANCH'; expected <type>/<lowercase-kebab-slug> under 60 characters with no '..' or '.lock' suffix" >&2
-    exit 1
-  fi
-fi
 if [ -e "$STATE" ] || [ -L "$STATE" ]; then
   fm_backlog_directory_present "$STATE" "state directory" || {
     echo "error: spawn refused: $FM_BACKLOG_TRANSITION_ERROR" >&2
@@ -3859,22 +3836,6 @@ if [ "$KIND" = secondmate ]; then
   fi
 else
   PROJ_ABS="$(cd "$(resolve_project_dir_arg "$PROJ")" && pwd)"
-  if [ "$RELAUNCH" -eq 0 ] && [ "$KIND" = ship ] &&
-    git -C "$PROJ_ABS" show-ref --verify --quiet "refs/heads/$BRANCH"; then
-    RECORDED_BRANCH=
-    EXISTING_META="$STATE/$ID.meta"
-    if [ -e "$EXISTING_META" ] || [ -L "$EXISTING_META" ]; then
-      fm_backlog_record_present "$EXISTING_META" "task record" "$STATE" || {
-        echo "error: spawn refused: $FM_BACKLOG_TRANSITION_ERROR" >&2
-        exit 1
-      }
-      RECORDED_BRANCH=$(fm_branch_recorded "$EXISTING_META")
-    fi
-    if [ "$RECORDED_BRANCH" != "$BRANCH" ]; then
-      echo "error: ship branch '$BRANCH' already exists in project $PROJ_ABS and is not this task's recorded branch; choose a different task id or ticket, or resume the task that owns it" >&2
-      exit 1
-    fi
-  fi
   WT=""
   BRIEF="$DATA/$ID/brief.md"
 fi
@@ -3934,6 +3895,44 @@ fi
   echo "error: task $ID has no brief at inaccessible data path $BRIEF" >&2
   exit 1
 }
+if [ "$RELAUNCH" -eq 0 ] && [ "$KIND" = ship ]; then
+  REQUESTED_BRANCH_TYPE=$BRANCH_TYPE
+  BRIEF_BRANCH=$(sed -n 's/^Ship branch: //p' "$BRIEF" | head -n 1)
+  if [ -z "$BRIEF_BRANCH" ]; then
+    echo "error: $BRIEF records no ship branch; regenerate it with an explicit --branch-type <feature|bugfix|hotfix|release|chore|refactor|docs|test|ci> before spawning" >&2
+    exit 1
+  fi
+  BRANCH_TYPE=${BRIEF_BRANCH%%/*}
+  if [ "$BRANCH_TYPE_SET" -eq 1 ] || [ "$BRANCH_PREFIX_SET" -eq 1 ] || [ "$TICKET_ID_SET" -eq 1 ]; then
+    RESOLVE_TYPE=$BRANCH_TYPE
+    [ "$BRANCH_TYPE_SET" -eq 0 ] || RESOLVE_TYPE=$REQUESTED_BRANCH_TYPE
+    EXPECTED_BRANCH=$(fm_branch_resolve_name "$ID" "$RESOLVE_TYPE" "$TICKET_ID" "$BRANCH_PREFIX") || exit 1
+    if [ "$EXPECTED_BRANCH" != "$BRIEF_BRANCH" ]; then
+      echo "error: branch mismatch for $ID: the brief says branch=$BRIEF_BRANCH but this spawn naming selection resolves to branch=$EXPECTED_BRANCH" >&2
+      exit 1
+    fi
+  fi
+  BRANCH=$BRIEF_BRANCH
+  if ! fm_branch_valid "$BRANCH"; then
+    echo "error: invalid ship branch '$BRANCH'; expected <type>/<lowercase-kebab-slug> under 60 characters with no '..' or '.lock' suffix" >&2
+    exit 1
+  fi
+  if git -C "$PROJ_ABS" show-ref --verify --quiet "refs/heads/$BRANCH"; then
+    RECORDED_BRANCH=
+    EXISTING_META="$STATE/$ID.meta"
+    if [ -e "$EXISTING_META" ] || [ -L "$EXISTING_META" ]; then
+      fm_backlog_record_present "$EXISTING_META" "task record" "$STATE" || {
+        echo "error: spawn refused: $FM_BACKLOG_TRANSITION_ERROR" >&2
+        exit 1
+      }
+      RECORDED_BRANCH=$(fm_branch_recorded "$EXISTING_META")
+    fi
+    if [ "$RECORDED_BRANCH" != "$BRANCH" ]; then
+      echo "error: ship branch '$BRANCH' already exists in project $PROJ_ABS and is not this task's recorded branch; choose a different task id or ticket, or resume the task that owns it" >&2
+      exit 1
+    fi
+  fi
+fi
 if [ "$KIND" = ship ] || [ "$KIND" = scout ]; then
   HERDR_LIFECYCLE_BRIEF_GUARD=$(fm_config_source_present "$CONFIG/herdr-lifecycle-spawn-guard") || exit 1
   if [ "$HERDR_LIFECYCLE_BRIEF_GUARD" = 1 ]; then
@@ -4042,23 +4041,20 @@ if [ "$KIND" = ship ]; then
   BRIEF_FORGE=$(sed -n 's/^Delivery contract: mode=[^ ]*.*[[:space:]]forge=\([^ ]*\).*$/\1/p' "$BRIEF" | head -n 1)
   [ -n "$BRIEF_FORGE" ] || BRIEF_FORGE=none
   BRIEF_BRANCH=$(sed -n 's/^Ship branch: //p' "$BRIEF" | head -n 1)
-  if [ -n "$BRIEF_BRANCH" ]; then
+  if [ "$RELAUNCH" -eq 1 ]; then
+    if [ -z "$BRIEF_BRANCH" ]; then
+      echo "warning: $BRIEF records no ship branch; relaunching on the task's recorded branch $BRANCH" >&2
+    elif [ "$BRIEF_BRANCH" != "$BRANCH" ]; then
+      echo "warning: $BRIEF records branch=$BRIEF_BRANCH but the task record selects $BRANCH; relaunching on the task's recorded branch" >&2
+    fi
+  elif [ -n "$BRIEF_BRANCH" ]; then
     [ "$BRIEF_BRANCH" = "$BRANCH" ] || {
       echo "error: branch mismatch for $ID: the brief says branch=$BRIEF_BRANCH but this spawn selected branch=$BRANCH" >&2
       exit 1
     }
-  elif [ "$BRANCH" != "fm/$ID" ]; then
-    # A relaunch's branch comes from the meta record (--branch-prefix is refused
-    # there), so a promoted scout whose brief never carried a Ship branch line
-    # must relaunch on that recorded branch rather than be refused.
-    if [ "$RELAUNCH" -eq 1 ]; then
-      echo "warning: $BRIEF records no ship branch; relaunching on the task's recorded branch $BRANCH" >&2
-    else
-      echo "error: $BRIEF records no ship branch; regenerate it with --branch-type and optional --ticket-id before spawning $BRANCH" >&2
-      exit 1
-    fi
   else
-    echo "warning: $BRIEF records no ship branch; defaulting to legacy branch $BRANCH" >&2
+    echo "error: $BRIEF records no ship branch; regenerate it with --branch-type and optional --ticket-id before spawning $BRANCH" >&2
+    exit 1
   fi
   if [ -z "$BRIEF_MODE" ]; then
     echo "warning: $BRIEF records no delivery contract line (scaffolded before ship briefs recorded one); launching on the explicit --mode $MODE - confirm its definition of done matches" >&2
@@ -4080,10 +4076,17 @@ if [ "$KIND" = ship ]; then
   # disagrees with it would tell the worker to open a pull request a Gerrit
   # server does not have, or to publish a change to a forge that is not Gerrit.
   if [ "$BRIEF_FORGE" != "$STANDING_FORGE" ]; then
+    repair_branch_type=${BRANCH_TYPE:-${BRANCH%%/*}}
+    repair_slug=${BRANCH#*/}
+    repair_ticket=$(printf '%s\n' "$repair_slug" | sed -n 's/^\([a-z][a-z0-9]*-[0-9][0-9]*\)-.*/\1/p')
+    branch_scaffold="--branch-type $repair_branch_type"
+    if [ -n "$repair_ticket" ] && printf '%s\n' "$repair_ticket" | LC_ALL=C grep -Eq '^[a-z][a-z0-9]*-[0-9]+$'; then
+      branch_scaffold="$branch_scaffold --ticket-id $repair_ticket"
+    fi
     if [ "$STANDING_FORGE" = none ]; then
-      forge_scaffold="fm-brief.sh $ID $PROJ_NAME --mode $MODE"
+      forge_scaffold="fm-brief.sh $ID $PROJ_NAME --mode $MODE $branch_scaffold"
     else
-      forge_scaffold="fm-brief.sh $ID $PROJ_NAME --mode $MODE --forge $STANDING_FORGE"
+      forge_scaffold="fm-brief.sh $ID $PROJ_NAME --mode $MODE $branch_scaffold --forge $STANDING_FORGE"
     fi
     echo "error: forge mismatch for $ID: $PROJ_NAME is registered forge=$STANDING_FORGE but $SOURCE_BRIEF records forge=$BRIEF_FORGE; keep the filled ## Captain's intent and ## Firstmate spec bodies, remove $SOURCE_BRIEF, re-scaffold it with $forge_scaffold, then re-fill those two subsections, so the worker's publication matches the project's forge" >&2
     exit 1
@@ -4151,16 +4154,15 @@ if [ "$KIND" = ship ]; then
     [ "$(delivery_rigor_rank "$MODE")" -lt "$(delivery_rigor_rank "$STANDING_MODE")" ]; then
     echo "notice: $ID ships mode=$MODE while the standing posture for $PROJ_NAME is $STANDING_MODE - less rigor than the captain's standing posture; proceed only on a current explicit captain instruction or an intake judgment you can state" >&2
   fi
-  # A registered branch type is a task-independent project choice. Compare the
-  # resolved branch with that type plus the selected ticket and normalized slug.
+  # A registered branch type is a task-independent project choice. Compare its
+  # type alone: the brief can carry an optional ticket that spawn flags do not.
   if ! STANDING_BRANCH=$("$FM_ROOT/bin/fm-project-mode.sh" --branch-prefix "$PROJ_NAME"); then
     echo "error: spawn refused for $ID: invalid branch= value in the $PROJ_NAME registry entry; correct data/projects.md before spawning" >&2
     exit 1
   fi
   if [ -n "$STANDING_BRANCH" ]; then
-    EXPECTED_STANDING_BRANCH=$(fm_branch_resolve_name "$ID" "$BRANCH_TYPE" "$TICKET_ID" "$STANDING_BRANCH") || exit 1
-    if [ "$BRANCH" != "$EXPECTED_STANDING_BRANCH" ]; then
-      echo "notice: $ID ships branch=$BRANCH while $PROJ_NAME registers branch type '$STANDING_BRANCH' (expected $EXPECTED_STANDING_BRANCH); pass the registry override at intake or correct the project registry" >&2
+    if [ "${BRANCH%%/*}" != "${STANDING_BRANCH%/}" ]; then
+      echo "notice: $ID ships branch=$BRANCH while $PROJ_NAME registers branch type '$STANDING_BRANCH'; pass the registry override at intake or correct the project registry" >&2
     fi
   fi
 fi

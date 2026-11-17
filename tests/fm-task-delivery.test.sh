@@ -1437,6 +1437,9 @@ test_spawn_requires_the_brief_to_carry_the_registered_forge() {
 $rec
 EOF
   write_brief "$home" forge-agree-a1 no-mistakes
+  sed 's|^Ship branch: chore/forge-agree-a1$|Ship branch: chore/za-812-forge-agree-a1|' \
+    "$home/data/forge-agree-a1/brief.md" > "$home/data/forge-agree-a1/brief.tmp"
+  mv "$home/data/forge-agree-a1/brief.tmp" "$home/data/forge-agree-a1/brief.md"
   out=$(run_spawn "$home" "$fakebin" forge-agree-a1 "$proj" claude --mode no-mistakes --yolo off 2>&1)
   status=$?
   [ "$status" -ne 0 ] || fail "a gerrit project launched on a brief that records no forge"
@@ -1445,7 +1448,7 @@ EOF
     "the refusal did not name the authored brief the re-scaffold must replace"
   assert_not_contains "$out" "remove $home/data/forge-agree-a1/launch-brief.md" \
     "the refusal named the generated launch brief instead of the authored one"
-  assert_contains "$out" "fm-brief.sh forge-agree-a1 proj --mode no-mistakes --forge gerrit" \
+  assert_contains "$out" "fm-brief.sh forge-agree-a1 proj --mode no-mistakes --branch-type chore --ticket-id za-812 --forge gerrit" \
     "the refusal did not print a re-scaffold command that can actually run"
   assert_contains "$out" "Captain's intent" \
     "the refusal did not say to preserve the filled subsections the re-scaffold discards"
@@ -1692,7 +1695,7 @@ EOF
   status=$?
   [ "$status" -ne 0 ] || fail "a forgejo project launched on a brief that records no forge"
   assert_contains "$out" "forge mismatch for forge-forgejo-s1" "the refusal did not name the drift it caught"
-  assert_contains "$out" "fm-brief.sh forge-forgejo-s1 proj --mode direct-PR --forge forgejo" \
+  assert_contains "$out" "fm-brief.sh forge-forgejo-s1 proj --mode direct-PR --branch-type chore --forge forgejo" \
     "the refusal did not print the forgejo re-scaffold command"
   assert_absent "$home/state/forge-forgejo-s1.meta" "the refused spawn still recorded a task"
 
