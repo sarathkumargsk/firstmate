@@ -13,8 +13,11 @@ SPAWN="$ROOT/bin/fm-spawn.sh"
 TMP_ROOT=$(fm_test_tmproot fm-trace-context-spawn)
 
 write_ship_brief() {  # <file> <id>
+  local branch_slug
+  branch_slug=$(printf '%s' "$2" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//')
   cat > "$1" <<EOF
 # Task
+Ship branch: chore/$branch_slug
 ## Captain's intent
 Exercise trace propagation for $2.
 

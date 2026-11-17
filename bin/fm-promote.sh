@@ -4,7 +4,7 @@
 # state/<task-id>.meta so fm-teardown.sh applies the full ship-task teardown protection
 # again. After promoting, send the crewmate its ship instructions via fm-send.sh
 # (inventory scratch state, reset to a clean default-branch base, carry over only
-# intended fix changes, create branch <prefix>/<task-id>, implement, then report done
+# intended fix changes, create branch <type>/<slug>, implement, then report done
 # according to this task's delivery mode).
 # again. Promotion also writes the crewmate's ship instructions to
 # data/<task-id>/ship-instructions.md, appends that same superseding contract to
@@ -34,10 +34,9 @@
 # there instead of asking firstmate to remember it.
 # no-mistakes-prod-only is a registry policy rather than a task mode and is refused.
 # The printed ship branch follows the same naming contract as a scaffolded ship
-# brief (bin/fm-branch-lib.sh): --branch-prefix overrides (a bare fix|feat|patch
-# gains its `/`, any other value is a project-registered prefix kept as given),
-# otherwise the prefix is derived from the task id. The legacy `fm/` prefix is
-# never produced by default.
+# brief (bin/fm-branch-lib.sh): --branch-type selects one of the nine
+# conventional types (required explicitly), --ticket-id prefixes the normalized slug,
+# and --branch-prefix overrides the selected type with a registered type.
 # A scout spawned on a named base records base_branch= in its meta; promotion
 # keeps that base as the ship's starting point and pull-request target, and
 # refuses a mode that cannot carry one (bin/fm-dod-lib.sh fm_base_branch_valid).
@@ -48,7 +47,7 @@
 # binding and bin/fm-dod-lib.sh owns what it changes for the worker, including
 # the refusal of a forge on local-only. A forge=external project is refused
 # outright, because its push guard is installed only by a ship spawn.
-# Usage: fm-promote.sh <task-id> --mode <no-mistakes|direct-PR|local-only> --yolo <on|off> [--branch-prefix <prefix>] [--upstream-consent <host>/<owner>/<repo>]
+# Usage: fm-promote.sh <task-id> --mode <no-mistakes|direct-PR|local-only> --yolo <on|off> --branch-type <type> [--ticket-id <id>] [--branch-prefix <type-prefix>] [--upstream-consent <host>/<owner>/<repo>]
 # --upstream-consent records the captain's one-off approval for this task to
 # publish to firstmate's own upstream repository; promotion applies the same
 # self-repository publication gate as bin/fm-spawn.sh (bin/fm-role-lib.sh), so
@@ -87,6 +86,10 @@ MODE=
 YOLO=
 BRANCH_PREFIX=
 BRANCH_PREFIX_SET=0
+BRANCH_TYPE=
+BRANCH_TYPE_SET=0
+TICKET_ID=
+TICKET_ID_SET=0
 MODE_SET=0
 YOLO_SET=0
 FORGE=none
@@ -103,6 +106,8 @@ for a in "$@"; do
       mode) MODE=$a; MODE_SET=1 ;;
       yolo) YOLO=$a; YOLO_SET=1 ;;
       branch-prefix) BRANCH_PREFIX=$a; BRANCH_PREFIX_SET=1 ;;
+      branch-type) BRANCH_TYPE=$a; BRANCH_TYPE_SET=1 ;;
+      ticket-id) TICKET_ID=$a; TICKET_ID_SET=1 ;;
       upstream-consent) UPSTREAM_CONSENT=$a; UPSTREAM_CONSENT_SET=1 ;;
     esac
     want_value=
@@ -115,12 +120,24 @@ for a in "$@"; do
     --yolo=*) YOLO=${a#--yolo=}; YOLO_SET=1 ;;
     --branch-prefix) want_value="branch-prefix" ;;
     --branch-prefix=*) BRANCH_PREFIX=${a#--branch-prefix=}; BRANCH_PREFIX_SET=1 ;;
+    --branch-type) want_value="branch-type" ;;
+    --branch-type=*) BRANCH_TYPE=${a#--branch-type=}; BRANCH_TYPE_SET=1 ;;
+    --ticket-id) want_value="ticket-id" ;;
+    --ticket-id=*) TICKET_ID=${a#--ticket-id=}; TICKET_ID_SET=1 ;;
     --upstream-consent) want_value="upstream-consent" ;;
     --upstream-consent=*) UPSTREAM_CONSENT=${a#--upstream-consent=}; UPSTREAM_CONSENT_SET=1 ;;
     *) POS+=("$a") ;;
   esac
 done
 [ -z "$want_value" ] || { echo "error: --$want_value requires a value" >&2; exit 1; }
+if [ "$BRANCH_PREFIX_SET" -eq 1 ] && [ -z "$BRANCH_PREFIX" ]; then
+  echo "error: --branch-prefix requires one of the supported branch types" >&2
+  exit 1
+fi
+if [ "$TICKET_ID_SET" -eq 1 ] && [ -z "$TICKET_ID" ]; then
+  echo "error: --ticket-id requires a non-empty ticket id such as ZA-812" >&2
+  exit 1
+fi
 [ "${#POS[@]}" -ge 1 ] || { echo "usage: fm-promote.sh <task-id> --mode <no-mistakes|direct-PR|local-only> --yolo <on|off>" >&2; exit 1; }
 [ "$MODE_SET" -eq 1 ] || {
   echo "error: promotion requires --mode <no-mistakes|direct-PR|local-only>; decide it now from the scout's findings and the project's registered posture in data/projects.md" >&2
@@ -128,6 +145,10 @@ done
 }
 [ "$YOLO_SET" -eq 1 ] || {
   echo "error: promotion requires --yolo <on|off>; it is this task's merge authority, not a project lookup" >&2
+  exit 1
+}
+[ "$BRANCH_TYPE_SET" -eq 1 ] || {
+  echo "error: promotion requires --branch-type <feature|bugfix|hotfix|release|chore|refactor|docs|test|ci>; choose the type explicitly from the scout findings" >&2
   exit 1
 }
 case "$MODE" in
@@ -179,14 +200,9 @@ refuse_impossible_forge_posture || exit 1
 
 ID=${POS[0]}
 fm_task_id_creation_valid "$ID" || { echo "error: invalid task id" >&2; exit 2; }
-if [ "$BRANCH_PREFIX_SET" -eq 1 ]; then
-  BRANCH_PREFIX=$(fm_branch_normalize_prefix "$BRANCH_PREFIX")
-else
-  BRANCH_PREFIX=$(fm_branch_default_prefix_for_id "$ID")
-fi
-BRANCH="$BRANCH_PREFIX$ID"
-if ! git check-ref-format --branch "$BRANCH" >/dev/null 2>&1; then
-  echo "error: --branch-prefix and task id must form a valid git branch (got '$BRANCH')" >&2
+BRANCH=$(fm_branch_resolve_name "$ID" "$BRANCH_TYPE" "$TICKET_ID" "$BRANCH_PREFIX") || exit 1
+if ! fm_branch_valid "$BRANCH"; then
+  echo "error: invalid ship branch '$BRANCH'; expected <type>/<lowercase-kebab-slug> under 60 characters with no '..' or '.lock' suffix" >&2
   exit 1
 fi
 printf -v BRANCH_Q '%q' "$BRANCH"

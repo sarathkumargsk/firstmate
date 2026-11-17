@@ -46,8 +46,11 @@ SPAWN_HOME="$TMP_ROOT/user-home"
 mkdir -p "$SPAWN_HOME"
 
 write_spawn_brief() {  # <file> <id>
+  local branch_slug
+  branch_slug=$(printf '%s' "$2" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//')
   cat > "$1" <<EOF
 # Task
+Ship branch: chore/$branch_slug
 ## Captain's intent
 Exercise backend dispatch for $2.
 

@@ -148,6 +148,7 @@ neutral_fm_root() {  # <dir> -> echoes a minimal root with a quiet guard
 write_spawn_brief() {  # <data-dir> <id>
   cat > "$1/$2/brief.md" <<'EOF'
 # Task
+Ship branch: chore/t3code-fixture
 ## Captain's intent
 Exercise T3 dispatch.
 

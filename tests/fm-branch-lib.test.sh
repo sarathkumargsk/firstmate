@@ -1,8 +1,5 @@
 #!/usr/bin/env bash
-# Tests for bin/fm-branch-lib.sh: the task-branch naming contract in AGENTS.md
-# section 7. The properties that matter are that the legacy `fm/` prefix is never
-# PRODUCED, that it is still READ, and that a repo holding two candidate branches
-# for one task is refused rather than guessed between.
+# Tests for branch derivation, validation, and legacy branch reads.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -21,60 +18,40 @@ make_repo() {
   printf '%s\n' "$repo"
 }
 
-test_prefix_set_excludes_legacy() {
-  fm_branch_prefix_valid fix || fail "fix must be a producible prefix"
-  fm_branch_prefix_valid feat || fail "feat must be a producible prefix"
-  fm_branch_prefix_valid patch || fail "patch must be a producible prefix"
-  ! fm_branch_prefix_valid fm || fail "fm must never be producible"
-  ! fm_branch_prefix_valid chore || fail "chore is outside the closed prefix set"
-  ! fm_branch_prefix_valid '' || fail "an empty prefix must be refused"
-  pass "fm-branch-lib produces only fix/feat/patch and never the legacy fm prefix"
-}
-
-test_prefix_derived_from_task_id() {
-  local p
-  p=$(fm_branch_prefix_for_id fix-login-crash)
-  [ "$p" = fix ] || fail "fix-* id should derive fix, got '$p'"
-  p=$(fm_branch_prefix_for_id feat-new-thing)
-  [ "$p" = feat ] || fail "feat-* id should derive feat, got '$p'"
-  p=$(fm_branch_prefix_for_id patch-typo)
-  [ "$p" = patch ] || fail "patch-* id should derive patch, got '$p'"
-  pass "fm-branch-lib derives the prefix from a task id that already names its kind"
-}
-
-test_unsignalled_id_still_gets_a_conventional_prefix() {
-  local p
-  for p in something-else feature-flag fixture-cleanup fm-legacy-looking ''; do
-    p=$(fm_branch_prefix_for_id "$p")
-    [ "$p" != fm ] || fail "an unsignalled id must never fall back to fm"
-    fm_branch_prefix_valid "$p" || fail "derived prefix '$p' is not in the produced set"
-  done
-  p=$(fm_branch_prefix_for_id something-else)
-  [ "$p" = "$FM_BRANCH_DEFAULT_PREFIX" ] || fail "unsignalled id should take the default prefix"
-  pass "fm-branch-lib gives an unsignalled task id a conventional prefix, never fm"
-}
-
-test_branch_name_shape() {
+test_derivation_validation_and_override() {
   local n
-  n=$(fm_branch_name feat my-task)
-  [ "$n" = feat/my-task ] || fail "branch name should be <prefix>/<id>, got '$n'"
-  pass "fm-branch-lib composes <prefix>/<task-id>"
+  n=$(fm_branch_resolve_name 'TASK ID-With__Punctuation' chore)
+  [ "$n" = chore/task-id-with-punctuation ] || fail "no-type default or normalization failed: '$n'"
+  n=$(fm_branch_resolve_name task-482 bugfix ZA-812)
+  [ "$n" = bugfix/za-812-task-482 ] || fail "ticket placement failed: '$n'"
+  n=$(fm_branch_resolve_name task-482 chore ZA-812 bugfix/)
+  [ "$n" = bugfix/za-812-task-482 ] || fail "registry type override failed: '$n'"
+  n=$(fm_branch_resolve_name "$(printf 'x%.0s' {1..90})" feature)
+  [ "${#n}" -eq 59 ] || fail "branch should truncate to 59 chars, got ${#n}"
+  fm_branch_valid "$n" || fail "derived branch should pass validation"
+  for n in fm/task chore/has..dots chore/end.lock chore/Upper "chore/$(printf 'x%.0s' {1..54})"; do
+    ! fm_branch_valid "$n" || fail "invalid branch should be refused: $n"
+  done
+  ! fm_branch_resolve_name task unsupported >/dev/null 2>&1 || fail "unknown type was accepted"
+  ! fm_branch_resolve_name task >/dev/null 2>&1 || fail "an omitted type was accepted"
+  ! fm_branch_resolve_name task chore 'bad ticket' >/dev/null 2>&1 || fail "malformed ticket was accepted"
+  pass "fm-branch-lib derives, truncates, overrides, and validates convention branch names"
 }
 
 test_resolve_finds_new_scheme_branch() {
   local repo out
   repo=$(make_repo resolve-new)
-  git -C "$repo" branch feat/task-a
-  out=$(fm_branch_resolve "$repo" task-a) || fail "resolve should find feat/task-a"
-  [ "$out" = feat/task-a ] || fail "resolve returned '$out'"
-  pass "fm-branch-lib resolves a new-scheme task branch"
+  git -C "$repo" branch feature/task-a
+  out=$(fm_branch_resolve "$repo" task-a) || fail "resolve should find feature/task-a"
+  [ "$out" = feature/task-a ] || fail "resolve returned '$out'"
+  pass "fm-branch-lib resolves a convention branch"
 }
 
 test_resolve_still_finds_legacy_branch() {
   local repo out
   repo=$(make_repo resolve-legacy)
   git -C "$repo" branch fm/task-b
-  out=$(fm_branch_resolve "$repo" task-b) || fail "resolve must still read a legacy fm/ branch"
+  out=$(fm_branch_resolve "$repo" task-b) || fail "resolve must still find legacy fm/ branch"
   [ "$out" = fm/task-b ] || fail "resolve returned '$out'"
   pass "fm-branch-lib still reads an in-flight legacy fm/ branch"
 }
@@ -92,31 +69,30 @@ test_resolve_refuses_two_candidates() {
   local repo out rc=0
   repo=$(make_repo resolve-ambiguous)
   git -C "$repo" branch fm/task-d
-  git -C "$repo" branch fix/task-d
+  git -C "$repo" branch feature/task-d
   out=$(fm_branch_resolve "$repo" task-d 2>&1) || rc=$?
   expect_code 2 "$rc" "resolve with a legacy and a new branch for one task"
   assert_contains "$out" 'multiple branches' "ambiguity must be named, not guessed between"
-  pass "fm-branch-lib refuses to guess between two branches for one task"
+  pass "fm-branch-lib refuses to guess between two task branches"
 }
 
-test_require_names_every_accepted_branch() {
-  local repo out rc=0
-  repo=$(make_repo require-none)
-  out=$(fm_branch_require "$repo" task-e 2>&1) || rc=$?
-  expect_code 1 "$rc" "require with no candidate branch"
-  assert_contains "$out" 'fix/task-e' "require should name the new-scheme candidates"
-  assert_contains "$out" 'feat/task-e' "require should name the new-scheme candidates"
-  assert_contains "$out" 'patch/task-e' "require should name the new-scheme candidates"
-  assert_contains "$out" 'fm/task-e' "require should name the legacy candidate too"
-  pass "fm-branch-lib names every accepted branch name when none exists"
+test_recorded_branch_wins() {
+  local repo meta out
+  repo=$(make_repo recorded)
+  git -C "$repo" branch fm/task-e
+  meta="$TMP_ROOT/task.meta"
+  printf 'branch=docs/task-e\n' > "$meta"
+  git -C "$repo" branch docs/task-e
+  out=$(fm_branch_resolve "$repo" task-e "$meta") || fail "recorded branch should resolve"
+  [ "$out" = docs/task-e ] || fail "recorded branch lost to candidate scan: '$out'"
+  pass "fm-branch-lib preserves recorded branch identity"
 }
 
-test_prefix_set_excludes_legacy
-test_prefix_derived_from_task_id
-test_unsignalled_id_still_gets_a_conventional_prefix
-test_branch_name_shape
+test_derivation_validation_and_override
 test_resolve_finds_new_scheme_branch
 test_resolve_still_finds_legacy_branch
 test_resolve_reports_absence_without_output
 test_resolve_refuses_two_candidates
-test_require_names_every_accepted_branch
+test_recorded_branch_wins
+
+echo "# fm-branch-lib.test.sh: all assertions passed"

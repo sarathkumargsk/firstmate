@@ -29,6 +29,14 @@ set -u
 SPAWN="$ROOT/bin/fm-spawn.sh"
 TMP_ROOT=$(fm_test_tmproot fm-spawn-orca-worktree)
 
+fixture_ship_branch() {  # <task-id>
+  local slug
+  slug=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//')
+  slug=${slug:0:53}
+  slug=${slug%-}
+  printf 'chore/%s\n' "$slug"
+}
+
 # make_orca_fakebin <dir>: a fake `orca` CLI that performs a REAL `git
 # worktree add` for `worktree create` (so spawn_worktree_isolated's checks are
 # exercised against a genuine, isolated worktree) and answers every other
@@ -158,6 +166,7 @@ test_orca_fresh_spawn_enters_the_worktree_it_created() {
   mkdir -p "$home/data/$id"
   cat > "$home/data/$id/brief.md" <<EOF
 # Task
+Ship branch: $(fixture_ship_branch "$id")
 ## Captain's intent
 Exercise an Orca-backed spawn for $id.
 
@@ -254,6 +263,7 @@ test_orca_launch_uses_controlled_tmux_environment() {
     fm_git_init_commit "$case_dir/project"
     cat > "$home/data/$id/brief.md" <<EOF
 # Task
+Ship branch: $(fixture_ship_branch "$id")
 ## Captain's intent
 Verify the controlled Orca environment source.
 
@@ -396,6 +406,7 @@ test_orca_spawn_waits_for_a_slow_pane_before_a_later_failure() {
   fm_git_init_commit "$case_dir/project"
   cat > "$home/data/$id/brief.md" <<EOF
 # Task
+Ship branch: $(fixture_ship_branch "$id")
 ## Captain's intent
 Exercise a failed Orca spawn after launch delivery.
 
@@ -444,6 +455,7 @@ test_orca_unrun_launch_file_is_reclaimed() {
   fm_git_init_commit "$case_dir/project"
   cat > "$home/data/$id/brief.md" <<EOF
 # Task
+Ship branch: $(fixture_ship_branch "$id")
 ## Captain's intent
 Exercise an Orca pane that never runs the launch command.
 
@@ -486,6 +498,7 @@ test_orca_pane_wins_launch_file_race_at_deadline() {
   fm_git_init_commit "$case_dir/project"
   cat > "$home/data/$id/brief.md" <<EOF
 # Task
+Ship branch: $(fixture_ship_branch "$id")
 ## Captain's intent
 Exercise an Orca pane that unlinks the launch file at the reclaim deadline.
 
@@ -537,6 +550,7 @@ test_orca_launch_file_delete_failure_keeps_terminal() {
   fm_git_init_commit "$case_dir/project"
   cat > "$home/data/$id/brief.md" <<EOF
 # Task
+Ship branch: $(fixture_ship_branch "$id")
 ## Captain's intent
 Exercise an Orca pane that cannot remove the launch file.
 
@@ -585,6 +599,7 @@ test_orca_interrupted_spawn_reclaims_launch_file() {
       fm_git_init_commit "$case_dir/project"
       cat > "$home/data/$id/brief.md" <<EOF
 # Task
+Ship branch: $(fixture_ship_branch "$id")
 ## Captain's intent
 Exercise an interrupted Orca spawn after launch delivery.
 
@@ -670,6 +685,7 @@ test_orca_interrupted_spawn_before_send_removes_launch_file() {
     fm_git_init_commit "$case_dir/project"
     cat > "$home/data/$id/brief.md" <<EOF
 # Task
+Ship branch: $(fixture_ship_branch "$id")
 ## Captain's intent
 Exercise an Orca spawn interrupted before launch delivery.
 
@@ -768,6 +784,7 @@ test_orca_allowlist_without_source_warns() {
     fm_git_init_commit "$case_dir/project"
     cat > "$home/data/$id/brief.md" <<EOF
 # Task
+Ship branch: $(fixture_ship_branch "$id")
 ## Captain's intent
 Exercise an Orca allowlist without a configured source.
 

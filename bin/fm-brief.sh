@@ -14,7 +14,7 @@
 # charters still use a single `{TASK}` charter fill. Firstmate may adjust other
 # sections when the task genuinely deviates (e.g. working an existing external
 # PR instead of shipping a new one).
-# Usage: fm-brief.sh <task-id> <repo-name> --mode <no-mistakes|direct-PR|local-only> [--branch-prefix <prefix>] [--base-branch <branch>] [--forge <none|gerrit|forgejo|external> [--shape squash]] [--herdr-lab]
+# Usage: fm-brief.sh <task-id> <repo-name> --mode <no-mistakes|direct-PR|local-only> --branch-type <type> [--ticket-id <id>] [--branch-prefix <type-prefix>] [--base-branch <branch>] [--forge <none|gerrit|forgejo|external> [--shape squash]] [--herdr-lab]
 #        fm-brief.sh <task-id> <repo-name> --scout [--base-branch <branch>] [--herdr-lab]
 #        fm-brief.sh <task-id> --secondmate {<project>...|--no-projects}
 #   --scout writes the scout contract instead: the deliverable is a report at
@@ -47,17 +47,17 @@
 #                the configured merge authority approves, firstmate merges to local main
 # no-mistakes-prod-only is a registry policy, not a task mode; resolve it to one of
 # the three concrete modes at intake before calling this script.
-# --branch-prefix <prefix> optionally overrides the ship branch's "fm/" prefix, so
-# the resolved branch is "<prefix><task-id>" instead of the default "fm/<task-id>".
-# Pass an empty prefix ("--branch-prefix ''") for a bare "<task-id>" branch, or a
-# conventional prefix such as "fix/" - useful for a third-party project that does
-# not use this tooling and should not see an "fm/"-branded branch or PR. Defaults
-# to "fm/" when omitted, so every existing installation's branch names are
-# unchanged. Like --mode, this script never reads data/projects.md for it: the
+# --branch-type <type> is required and selects one of feature, bugfix, hotfix,
+# release, chore, refactor, docs, test, or ci. The branch is derived as
+# <type>/<normalized-task-id>, lowercased and truncated to keep the full name under
+# 60 characters. --ticket-id <id> puts a validated ticket such as ZA-812 first
+# in that slug. --branch-prefix <type-prefix> overrides the type while retaining
+# the normalized slug and optional ticket. Like --mode, this script never reads data/projects.md for it: the
 # registry's optional "branch=<prefix>" annotation (bin/fm-project-mode.sh's
 # header owns that format and its --branch-prefix query) is the captain's
 # standing per-project preference, and firstmate resolves it per task at intake
-# and passes the explicit flag. Refused on --scout and --secondmate: a scout
+# and passes the explicit flag. A prefix must be one of the nine accepted types.
+# Refused on --scout and --secondmate: a scout
 # makes no branch and a charter is not a delivery contract.
 # --base-branch <branch> starts the task from origin's <branch> instead of the
 # repository default, for work that belongs on a named integration, feature, or
@@ -108,13 +108,11 @@
 # infrastructure every lane shares - the no-mistakes daemon and the worktree pool
 # their own slot came from - so ship and scout cannot drift apart. A secondmate
 # charter omits it: that home allocates and returns slots for its own crewmates.
-# The ship branch is `<prefix>/<task-id>`, resolved here so the worker never picks
-# a prefix at runtime (AGENTS.md section 7 owns which prefix means what).
-# --branch-prefix is the explicit override (a bare fix|feat|patch gains its `/`;
-# any other value is a project-registered prefix kept as given); without it the
-# prefix is derived from the task id's own leading fix-/feat-/patch- token,
-# falling back to patch. bin/fm-branch-lib.sh owns that derivation and still
-# reads the legacy `fm/` prefix, but never produces it by default.
+# The ship branch is `<type>/<slug>`, resolved here so the worker never picks a
+# name at runtime. Ship callers must choose --branch-type from the nine
+# conventional types explicitly; --ticket-id adds a ticket to the slug; --branch-prefix is a
+# per-project override that must also be one of those types. bin/fm-branch-lib.sh
+# owns derivation, validation, and legacy branch reads.
 # --mode, --forge, and --shape are refused on scout and secondmate scaffolds: a
 # scout's deliverable is a report rather than a merge, and a charter is not a
 # delivery contract.
@@ -224,6 +222,10 @@ MODE=
 MODE_SET=0
 BRANCH_PREFIX=
 BRANCH_PREFIX_SET=0
+BRANCH_TYPE=
+BRANCH_TYPE_SET=0
+TICKET_ID=
+TICKET_ID_SET=0
 BASE_BRANCH=
 BASE_BRANCH_SET=0
 FORGE=none
@@ -244,6 +246,8 @@ for a in "$@"; do
     case "$want_value" in
       mode) MODE=$a; MODE_SET=1 ;;
       branch-prefix) BRANCH_PREFIX=$a; BRANCH_PREFIX_SET=1 ;;
+      branch-type) BRANCH_TYPE=$a; BRANCH_TYPE_SET=1 ;;
+      ticket-id) TICKET_ID=$a; TICKET_ID_SET=1 ;;
       base-branch) BASE_BRANCH=$a; BASE_BRANCH_SET=1 ;;
       forge) FORGE=$a; FORGE_SET=1 ;;
       shape) SHAPE=$a; SHAPE_SET=1 ;;
@@ -263,6 +267,10 @@ for a in "$@"; do
     --mode=*) MODE=${a#--mode=}; MODE_SET=1 ;;
     --branch-prefix) want_value="branch-prefix" ;;
     --branch-prefix=*) BRANCH_PREFIX=${a#--branch-prefix=}; BRANCH_PREFIX_SET=1 ;;
+    --branch-type) want_value="branch-type" ;;
+    --branch-type=*) BRANCH_TYPE=${a#--branch-type=}; BRANCH_TYPE_SET=1 ;;
+    --ticket-id) want_value="ticket-id" ;;
+    --ticket-id=*) TICKET_ID=${a#--ticket-id=}; TICKET_ID_SET=1 ;;
     --base-branch) want_value="base-branch" ;;
     --base-branch=*) BASE_BRANCH=${a#--base-branch=}; BASE_BRANCH_SET=1 ;;
     --forge) want_value=forge ;;
@@ -281,6 +289,14 @@ for a in "$@"; do
   esac
 done
 [ -z "$want_value" ] || { echo "error: --$want_value requires a value" >&2; exit 1; }
+if [ "$BRANCH_PREFIX_SET" -eq 1 ] && [ -z "$BRANCH_PREFIX" ]; then
+  echo "error: --branch-prefix requires one of the supported branch types" >&2
+  exit 1
+fi
+if [ "$TICKET_ID_SET" -eq 1 ] && [ -z "$TICKET_ID" ]; then
+  echo "error: --ticket-id requires a non-empty ticket id such as ZA-812" >&2
+  exit 1
+fi
 
 # Ship delivery mode is an explicit per-task decision (AGENTS.md section 7). A
 # missing or invalid value stops the scaffold rather than silently defaulting.
@@ -296,21 +312,20 @@ if [ "$KIND" = ship ]; then
       exit 1 ;;
     *) echo "error: --mode must be one of no-mistakes, direct-PR, local-only (got '$MODE')" >&2; exit 1 ;;
   esac
+  [ "$BRANCH_TYPE_SET" -eq 1 ] || {
+    echo "error: ship briefs require --branch-type <feature|bugfix|hotfix|release|chore|refactor|docs|test|ci>; choose the type explicitly at intake" >&2
+    exit 1
+  }
 elif [ "$MODE_SET" -eq 1 ]; then
   echo "error: --mode applies only to ship briefs; a scout delivers a report and a secondmate charter is not a delivery contract" >&2
   exit 1
 fi
 
-# A ship branch's prefix is optional per-project cosmetics, not a delivery
-# decision, but it still only makes sense where a branch is actually created.
-if [ "$KIND" != ship ] && [ "$BRANCH_PREFIX_SET" -eq 1 ]; then
-  echo "error: --branch-prefix applies only to ship briefs; a scout makes no branch and a secondmate charter is not a delivery contract" >&2
+# Branch naming options only make sense where a ship branch is created.
+if [ "$KIND" != ship ] && { [ "$BRANCH_PREFIX_SET" -eq 1 ] || [ "$BRANCH_TYPE_SET" -eq 1 ] || [ "$TICKET_ID_SET" -eq 1 ]; }; then
+  echo "error: branch naming options apply only to ship briefs; a scout makes no branch and a secondmate charter is not a delivery contract" >&2
   exit 1
 fi
-case "$BRANCH_PREFIX" in
-  *' '*) echo "error: --branch-prefix must not contain a space (got '$BRANCH_PREFIX')" >&2; exit 1 ;;
-  -*) echo "error: --branch-prefix must not start with '-' (got '$BRANCH_PREFIX')" >&2; exit 1 ;;
-esac
 # The forge is validated against the same closed set the renderers enforce, so a
 # typo or an impossible mode/forge pair stops here rather than reaching a worker.
 if [ "$KIND" = ship ]; then
@@ -390,17 +405,16 @@ if [ "$KIND" = ship ] && [ "$MODE" != local-only ] && [ "$PROJECT_DIR_SET" -eq 1
   esac
 fi
 ID=${POS[0]}
-if [ "$BRANCH_PREFIX_SET" -eq 1 ]; then
-  BRANCH_PREFIX=$(fm_branch_normalize_prefix "$BRANCH_PREFIX")
-else
-  BRANCH_PREFIX=$(fm_branch_default_prefix_for_id "$ID")
+BRANCH=
+BRANCH_Q=
+if [ "$KIND" = ship ]; then
+  BRANCH=$(fm_branch_resolve_name "$ID" "$BRANCH_TYPE" "$TICKET_ID" "$BRANCH_PREFIX") || exit 1
+  if ! fm_branch_valid "$BRANCH"; then
+    echo "error: invalid ship branch '$BRANCH'; expected <type>/<lowercase-kebab-slug> under 60 characters with no '..' or '.lock' suffix" >&2
+    exit 1
+  fi
+  printf -v BRANCH_Q '%q' "$BRANCH"
 fi
-BRANCH="$BRANCH_PREFIX$ID"
-if ! git check-ref-format --branch "$BRANCH" >/dev/null 2>&1; then
-  echo "error: --branch-prefix and task id must form a valid git branch (got '$BRANCH')" >&2
-  exit 1
-fi
-printf -v BRANCH_Q '%q' "$BRANCH"
 
 if [ "$KIND" = secondmate ] && [ "$HERDR_LAB" -eq 1 ]; then
   echo "error: --herdr-lab applies only to crewmate ship or scout briefs" >&2

@@ -83,6 +83,7 @@ EOF
     mkdir -p "$home/data/$id"
     cat > "$home/data/$id/brief.md" <<EOF
 # Task
+Ship branch: chore/$id
 ## Captain's intent
 Exercise backlog dispatch for $id.
 

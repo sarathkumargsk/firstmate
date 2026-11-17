@@ -153,8 +153,9 @@ make_spawn_case() {
   wt="$case_dir/wt"
   fakebin=$(make_rovo_fakebin "$case_dir/fake")
   mkdir -p "$home/data/$id" "$home/projects" "$home/state" "$home/config"
-  cat > "$home/data/$id/brief.md" <<'EOF'
+  cat > "$home/data/$id/brief.md" <<EOF
 # Task
+Ship branch: chore/$id
 ## Captain's intent
 Exercise Rovo dispatch.
 

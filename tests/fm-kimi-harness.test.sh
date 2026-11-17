@@ -270,8 +270,9 @@ make_spawn_case() {
   fakebin=$(make_spawn_fakebin "$case_dir/fake")
   mkdir -p "$home/data/$id" "$home/projects" "$home/state" "$home/config" "$home/.kimi-code"
   printf '# Kimi test config\ndefault_model = "test"\n' > "$home/.kimi-code/config.toml"
-  cat > "$home/data/$id/brief.md" <<'EOF'
+  cat > "$home/data/$id/brief.md" <<EOF
 # Task
+Ship branch: chore/$id
 ## Captain's intent
 Exercise Kimi dispatch.
 

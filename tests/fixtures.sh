@@ -384,10 +384,14 @@ fm_test_spawn_home() {
 
 # fm_test_spawn_brief <home> <id> [captain-intent]
 fm_test_spawn_brief() {
-  local home=$1 id=$2 intent=${3:-brief for $2}
+  local home=$1 id=$2 intent=${3:-brief for $2} branch_slug
+  branch_slug=$(printf '%s' "$id" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//')
+  branch_slug=${branch_slug:0:53}
+  branch_slug=${branch_slug%-}
   mkdir -p "$home/data/$id"
   cat > "$home/data/$id/brief.md" <<EOF
 # Task
+Ship branch: chore/$branch_slug
 ## Captain's intent
 $intent
 

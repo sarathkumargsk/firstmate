@@ -572,6 +572,7 @@ make_agy_spawn_case() {
   mkdir -p "$home/data/$id" "$home/projects" "$home/state" "$home/config"
   cat > "$home/data/$id/brief.md" <<'EOF'
 # Task
+Ship branch: chore/agy-harness-fixture
 ## Captain's intent
 Exercise Antigravity dispatch.
 

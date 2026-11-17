@@ -144,8 +144,9 @@ make_spawn_case() {
   id="muse-$name-x1"
   mkdir -p "$home/data/$id" "$home/projects" "$home/state" "$home/config" \
     "$home/xdgconfig" "$home/xdgdata"
-  cat > "$home/data/$id/brief.md" <<'EOF'
+  cat > "$home/data/$id/brief.md" <<EOF
 # Task
+Ship branch: chore/$id
 ## Captain's intent
 Exercise Muse dispatch.
 
